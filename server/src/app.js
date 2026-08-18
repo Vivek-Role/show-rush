@@ -1,4 +1,5 @@
 import express from 'express';
+import { authRouter } from './routes/auth.js';
 import { healthRouter } from './routes/health.js';
 import { errorHandler, notFound } from './middleware/error.js';
 
@@ -10,6 +11,7 @@ export function createApp() {
   app.use(express.json({ limit: '100kb' }));
 
   app.use(healthRouter);
+  app.use('/api/auth', authRouter);
 
   app.use(notFound);
   app.use(errorHandler);
