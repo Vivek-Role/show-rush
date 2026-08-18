@@ -1,0 +1,17 @@
+{
+  "name": "show-rush",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Concurrent seat reservation system",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "22.23.2"
+  },
+  "workspaces": [
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace server",
+    "start": "npm run start --workspace server"
+  }
+}

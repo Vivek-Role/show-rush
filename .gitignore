@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Environment — never commit real credentials
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test / coverage
+coverage/
+
+# Editor and OS
+.DS_Store
+*.swp
