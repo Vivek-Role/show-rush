@@ -151,18 +151,98 @@ async function createBookingNaive({ userId, showId, seats, totalPaise }) {
   return booking;
 }
 
-export async function createBooking({ userId, showId, seatIds }) {
-  // Module 2.4 implements this branch, together with the unique constraint that
-  // makes it safe. A "safe" path without that constraint would be a false
-  // claim, so until then it says so plainly.
-  if (config.bookingMode === 'safe') {
-    throw new HttpError(
-      501,
-      'NOT_IMPLEMENTED',
-      'Safe booking mode is not implemented yet; it arrives in Module 2.4',
-    );
+// ---------------------------------------------------------------------------
+// The safe path — PLAN.md 2.4.
+//
+// The guarantee is the unique constraint in 002_unique_booking_seats.sql, and
+// nothing else. The pre-check in createBooking() is UX: it turns the ordinary
+// "someone took that seat a minute ago" case into a 409 without writing a row.
+// Delete the pre-check and this path is still correct — slower and ruder, but
+// correct. Delete the constraint and no amount of application code makes it so.
+//
+// The transaction is what makes a multi-seat booking all-or-nothing: either
+// every seat is claimed or none is, never a booking holding half its seats.
+// ---------------------------------------------------------------------------
+const SEAT_TAKEN_CONSTRAINT = 'booking_seats_show_id_seat_id_key';
+
+async function createBookingSafe({ userId, showId, seats, totalPaise }) {
+  // Two attempts, for one reason only: a booking_ref collision. Inside a
+  // transaction a failed INSERT aborts the whole transaction, so the retry has
+  // to be the whole transaction, not the statement. A seat conflict is never
+  // retried — the seat is gone, and trying again would only take longer to say
+  // so.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const client = await pool.connect();
+
+    try {
+      await client.query('begin');
+
+      const { rows } = await client.query(
+        `insert into bookings (booking_ref, user_id, show_id, status, total_paise)
+         values ($1, $2, $3, 'pending', $4)
+         returning id, booking_ref`,
+        [newBookingRef(), userId, showId, totalPaise],
+      );
+      const booking = rows[0];
+
+      // Ascending, always. Two overlapping transactions then take the index
+      // entries in the same order, so one waits for the other instead of the
+      // two deadlocking on seats claimed in opposite orders.
+      const seatIds = seats
+        .map((seat) => seat.id)
+        .sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0));
+
+      // One statement for every seat. show_id comes from the same resolved
+      // show as bookings.show_id above, inside this transaction, so the two
+      // columns cannot disagree — closing the denormalisation risk Phase 1
+      // recorded as R2.
+      await client.query(
+        `insert into booking_seats (booking_id, show_id, seat_id)
+         select $1, $2, * from unnest($3::bigint[])`,
+        [booking.id, showId, seatIds],
+      );
+
+      await client.query('commit');
+      return booking;
+    } catch (err) {
+      await client.query('rollback').catch(() => {});
+
+      // Classified by constraint name, not by code alone: 23505 is also what a
+      // booking_ref collision raises, and that is a retry, not a 409.
+      if (err.code === '23505' && err.constraint === SEAT_TAKEN_CONSTRAINT) {
+        throw new HttpError(
+          409,
+          'SEATS_UNAVAILABLE',
+          'One or more of those seats are no longer available',
+        );
+      }
+
+      if (err.code === '23505' && err.constraint === 'bookings_booking_ref_key' && attempt === 0) {
+        continue;
+      }
+
+      // Sorted inserts should make this unreachable. If it ever fires, the
+      // ordering assumption is wrong and that is worth knowing, so it is
+      // logged rather than quietly folded into the 409 it returns.
+      if (err.code === '40P01') {
+        console.error('deadlock on the booking path (40P01) — seat ordering assumption may be wrong');
+        throw new HttpError(
+          409,
+          'SEATS_UNAVAILABLE',
+          'One or more of those seats are no longer available',
+        );
+      }
+
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
+  throw new Error('Could not generate a unique booking_ref');
+}
+
+export async function createBooking({ userId, showId, seatIds }) {
   await recordIsolation();
 
   const found = await getShowWithScreen(showId);
@@ -173,9 +253,15 @@ export async function createBooking({ userId, showId, seatIds }) {
   const seats = await resolveSeats(found.show.id, found.screen.id, seatIds);
   const totalPaise = seats.reduce((sum, seat) => sum + seat.price_paise, 0);
 
+  // Both modes run this. On the naive path it is the whole of the "check", and
+  // it is why that path races. On the safe path it is UX only — see
+  // createBookingSafe. Either way it returns the same 409 code the constraint
+  // violation does, so a client never has to know which layer caught it.
   await assertSeatsAvailable(found.show.id, seatIds);
 
-  const booking = await createBookingNaive({
+  const create = config.bookingMode === 'safe' ? createBookingSafe : createBookingNaive;
+
+  const booking = await create({
     userId,
     showId: found.show.id,
     seats,
