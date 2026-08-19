@@ -1,5 +1,6 @@
 import express from 'express';
 import { authRouter } from './routes/auth.js';
+import { bookingsRouter } from './routes/bookings.js';
 import { healthRouter } from './routes/health.js';
 import { moviesRouter } from './routes/movies.js';
 import { showsRouter } from './routes/shows.js';
@@ -14,6 +15,7 @@ export function createApp() {
 
   app.use(healthRouter);
   app.use('/api/auth', authRouter);
+  app.use('/api/bookings', bookingsRouter);
   app.use('/api/movies', moviesRouter);
   app.use('/api/shows', showsRouter);
 

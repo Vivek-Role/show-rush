@@ -51,6 +51,46 @@ export function presentString(value, field) {
   return value;
 }
 
+// Module 2.1 / decision Q3. The Phase 3 seat-selection hook applies the same
+// rule, but a limit only the browser enforces is not a limit.
+export const MAX_SEATS_PER_BOOKING = 6;
+
+// Ids arrive from JSON as either a string or a number. This checks only that
+// the field is present and shaped like an identifier; whether it resolves to a
+// row is the service's question, and an id that resolves to nothing is a 404 —
+// the same answer the Phase 1 read routes give.
+export function idValue(value, field) {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return String(value);
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    return value.trim();
+  }
+  throw validationError(`${field} is required`);
+}
+
+export function seatIdList(value, field = 'seat_ids') {
+  if (!Array.isArray(value)) {
+    throw validationError(`${field} must be an array`);
+  }
+  if (value.length === 0) {
+    throw validationError(`${field} must contain at least one seat`);
+  }
+  if (value.length > MAX_SEATS_PER_BOOKING) {
+    throw validationError(`${field} must contain at most ${MAX_SEATS_PER_BOOKING} seats`);
+  }
+
+  const ids = value.map((entry, index) => idValue(entry, `${field}[${index}]`));
+
+  // The same seat twice in one request is a client bug. Unchecked, it would
+  // insert two booking_seats rows for one seat and charge for both.
+  if (new Set(ids).size !== ids.length) {
+    throw validationError(`${field} must not contain duplicate seats`);
+  }
+
+  return ids;
+}
+
 export function personName(value, field = 'name') {
   const trimmed = asTrimmedString(value, field);
   if (trimmed.length === 0) {

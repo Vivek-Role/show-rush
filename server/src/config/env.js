@@ -16,6 +16,9 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? '',
   jwtSecret: process.env.JWT_SECRET ?? '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  // Defaults to 'safe' so that an unset variable can never deploy the racy
+  // booking path. Enabling 'naive' is always a deliberate act.
+  bookingMode: (process.env.BOOKING_MODE ?? 'safe').trim().toLowerCase(),
 };
 
 // Unlike the connection strings, a missing signing secret is fatal: signing
@@ -26,6 +29,26 @@ export const config = {
 export function assertAuthConfig() {
   if (!config.jwtSecret) {
     throw new Error('JWT_SECRET is not set. See .env.example.');
+  }
+}
+
+// BOOKING_MODE=naive is the deliberately racy path Phase 2 measures. It exists
+// permanently so the "before" number stays reproducible, and it must never
+// serve real users — a double-booked seat in production is not an experiment.
+// bookingService calls this at import, so a misconfigured server refuses to
+// start rather than discovering the problem under load.
+export function assertBookingConfig() {
+  if (config.bookingMode !== 'naive' && config.bookingMode !== 'safe') {
+    throw new Error(
+      `BOOKING_MODE must be 'naive' or 'safe', got '${config.bookingMode}'. See .env.example.`,
+    );
+  }
+
+  if (config.bookingMode === 'naive' && config.nodeEnv === 'production') {
+    throw new Error(
+      'BOOKING_MODE=naive must never run with NODE_ENV=production. ' +
+        'The naive path double-books by design. See .env.example.',
+    );
   }
 }
 
