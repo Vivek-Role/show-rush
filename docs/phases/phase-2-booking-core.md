@@ -520,15 +520,40 @@ register, login, `/me`) → deployed verification (§13).
 
 ### Results table — to be filled by 2.3 and 2.5
 
+Both rows measured. 3 runs each, 500 VUs, one seat, identical workload.
+
 | Metric | Before (naive) | After (safe) | Method |
 |---|---|---|---|
-| Double-booked seats | *not measured* | *not measured* | `loadtest/count-double-bookings.sql` |
-| Successful bookings (201) | *not measured* | *not measured* | k6 status counter |
-| Rejected (409) | *not measured* | *not measured* | k6 status counter |
-| 5xx | *not measured* | *not measured* | k6 status counter |
-| `dropped_iterations` | *not measured* | *not measured* | k6 summary |
-| `http_req_failed` | *not measured* | *not measured* | k6 summary |
-| `http_req_duration` p95 | *not measured* | *not measured* | k6 summary |
+| **Double-booked seats** | **303 / 150 / 303** | **0 / 0 / 0** | `loadtest/count-double-bookings.sql` |
+| Successful bookings (201) | 304 / 151 / 304 | 1 / 1 / 1 | k6 status counter |
+| Rejected (409) | 196 / 349 / 196 | 499 / 499 / 499 | k6 status counter |
+| 5xx | 0 / 0 / 0 | 0 / 0 / 0 | k6 status counter |
+| `dropped_iterations` | 0 / 0 / 0 | 0 / 0 / 0 | k6 summary |
+| `http_req_failed` | 0% / 0% / 0% | 0% / 0% / 0% | k6 summary |
+| `http_req_duration` p95 | 1090.4 / 911.9 / 994.6 ms | 1139.5 / 734.9 / 831.9 ms | k6 summary |
+
+Raw evidence: `loadtest/results/2.3-naive-2026-08-19.json` and
+`loadtest/results/2.5-safe-2026-08-19.json`.
+
+**Third data point — `BOOKING_MODE=naive` against a database that already has
+the `002` constraint.** Not the before-number; it exists to separate the
+constraint from the error handling.
+
+| Metric | Value |
+|---|---|
+| Double-booked seats | **0** |
+| 201 / 409 / 5xx | 1 / 195 / **304** |
+| `dropped_iterations` | 0 |
+
+The naive code is unchanged; only the schema beneath it differs. The database
+refused every duplicate, and because that path does not catch `23505` the
+refusals surfaced as 5xx. The constraint is what prevents the double-booking;
+the safe path is what turns the rejection into a clean 409.
+
+**Latency is reported, not claimed.** 500 VUs against a pool of 10 measures
+queueing. These p95 figures are not a throughput or capacity result, and the
+before/after latency difference is not a performance improvement — the two
+paths do different amounts of work per request.
 
 **Method recorded with both rows:** machine and OS · WSL2 Ubuntu · Node
 v22.23.2 · Postgres 17.11 (`postgres:17-alpine`, port 5433) · k6 v2.2.0 ·
@@ -962,3 +987,75 @@ Merge to `main` is requested only when **every** line below is true and recorded
 **Non-negotiable:** if the before-number is not reproducible by the §14
 procedure at close-out, the phase is not done. `PLAN.md` names it as one of two
 things that must never be cut.
+
+---
+
+## 21. Module 2.5 — verification run record
+
+**Status:** MEASURED · 2026-08-19 UTC (2026-08-20 IST) · commit `3946e16`
+**Artifact:** `loadtest/results/2.5-safe-2026-08-19.json`
+
+### What was run
+
+Fresh disposable database → `migrate` (`001` + `002`) → seed → server with
+`BOOKING_MODE=safe` → the same k6 invocation as the baseline (500 VUs, one
+iteration each, 3 s barrier, show 1, seat 3, `http://localhost:3000`) → the
+counting SQL. Repeated three times, re-seeded before each run.
+
+Conditions were matched to the baseline deliberately: same machine, same Node,
+k6 and Postgres versions, same pool default of 10, `read committed` asserted at
+runtime, and `collab-postgres` / `collab-redis` stopped for the duration and
+restarted afterwards — as they were for 2.3.
+
+### Result
+
+**0 double-bookings in all three runs.** Exactly one 201 and 499 409s each
+time, with 0 dropped iterations, 0 5xx and 0 no-response — so the zero is a
+result, not an absence of load. The full table is in §9.
+
+### Deliberate choices worth recording
+
+**A disposable database, not the dev database.** `002` is the point after which
+`BOOKING_MODE=naive` stops double-booking on that database. Measuring on a
+throwaway leaves the main dev database at `001`, so the before-number remains
+reproducible in place rather than only via §14. The dev database was verified
+untouched afterwards: still `001`, still 5 bookings / 11 booking_seats.
+
+**Three runs, not one.** The baseline varied (303, 150, 303) because a race is
+stochastic. The safe number does not vary, and could not — but running it once
+would not have shown that.
+
+**The third data point.** `BOOKING_MODE=naive` on a constrained database:
+1 created, 195 pre-check 409s, 304 5xx, 0 double-bookings. It separates the two
+things 2.4 changed. The constraint alone is what prevents the double-booking;
+the safe path is what turns the rejection into a clean 409 rather than a 500.
+This is **not** the before-number and is labelled as such everywhere it appears.
+
+### Discovered, deferred
+
+```
+Issue: recordIsolation()'s memoisation is racy. Under 500 concurrent first
+       bookings the guard is read before it is set, so the isolation level was
+       queried and logged 92 times in a single run rather than once.
+Why out of scope: it is log noise, not a correctness problem. The level is
+       still asserted and still recorded, and the value is identical every
+       time. Fixing it means touching the booking path, which 2.5 must not do
+       after the measurement.
+Recommended action: guard with an in-flight promise rather than a resolved
+       value. Small, and belongs to a later module or BACKLOG.md.
+```
+
+```
+Issue: the peak-concurrent-backends observation recorded in the 2.3 artifact
+       was not captured for 2.5 — the sampler did not write its output.
+Why out of scope: it was labelled an observation, not a controlled
+       measurement, in 2.3 as well. No claim in either artifact depends on it.
+Recommended action: none required. If symmetry matters at close-out, re-run
+       the sampler alone; it does not require re-running the measurement.
+```
+
+### Not done by this module
+
+`README.md`'s benchmark table still carries neither number. §17 marks that a
+**separately authorized commit**, and it remains outstanding — the 2.5
+done-when criteria are not fully met until it lands.

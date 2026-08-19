@@ -1,0 +1,1251 @@
+{
+  "artifact": "Phase 2.5 — safe booking verification",
+  "module": "2.5",
+  "purpose": "The \"after\" number in Phase 2 before/after. Measures how many seats the safe path sells more than once under the identical workload that produced the baseline.",
+  "status": "MEASURED",
+  "recorded_utc": "2026-08-19T19:54:55.796Z",
+  "measurement_date_utc": "2026-08-19",
+  "note_on_date": "All timestamps here are UTC. The local date at the time of measurement was 2026-08-20 (IST); the filename uses the UTC date, matching the 2.3 artifact.",
+  "compared_against": {
+    "artifact": "loadtest/results/2.3-naive-2026-08-19.json",
+    "before_double_bookings_per_run": [
+      303,
+      150,
+      303
+    ],
+    "workload_identical": true,
+    "what_changed": "Two things, together, and they cannot be separated by this measurement: migration 002 added UNIQUE (show_id, seat_id), and BOOKING_MODE=safe routes through a transaction that catches the violation. The third data point below isolates the constraint from the error handling."
+  },
+  "gates_verified_before_running": {
+    "branch": "feat/booking-core",
+    "head_commit": "3946e164cbd6fa004e183978f94ca5bd61995ac0",
+    "module_2_4_in_history": true,
+    "working_tree_clean": true,
+    "database_schema": "001_init.sql + 002_unique_booking_seats.sql, applied to a disposable database",
+    "unique_index_on_show_id_seat_id": 1,
+    "constraint_name": "booking_seats_show_id_seat_id_key",
+    "collab_containers": "collab-postgres and collab-redis stopped for the duration and restarted afterwards, matching the 2.3 baseline conditions. Volumes untouched."
+  },
+  "environment": {
+    "date_utc": "2026-08-19T19:52:20Z",
+    "commit": "3946e164cbd6fa004e183978f94ca5bd61995ac0",
+    "branch": "feat/booking-core",
+    "node": "v22.23.2",
+    "npm": "10.9.8",
+    "k6": "k6 v2.2.0 (commit/00a9a1b7f5, go1.26.5, linux/amd64)",
+    "os": "Ubuntu 26.04 LTS on WSL2 / Windows 11",
+    "kernel": "6.18.33.2-microsoft-standard-WSL2",
+    "cpu_cores": "4",
+    "mem_total": "5.8Gi",
+    "postgres": "17.11 (postgres:17-alpine, host port 5433)",
+    "isolation_asserted_at_runtime": "read committed",
+    "pg_max_conns": "100",
+    "pool_max_in_code": "0 explicit settings (0 means pg default of 10)",
+    "note_same_machine_as_baseline": true
+  },
+  "workload": {
+    "script": "loadtest/seat-contention.js",
+    "executor": "per-vu-iterations",
+    "vus": 500,
+    "iterations_per_vu": 1,
+    "barrier_ms": 3000,
+    "show_id": "1",
+    "seat_id": "3",
+    "base_url": "http://localhost:3000",
+    "booking_mode": "safe",
+    "node_env": "development",
+    "pg_pool_max": 10,
+    "unchanged_from_baseline": true,
+    "unchanged_between_runs": true
+  },
+  "runs": [
+    {
+      "run": 1,
+      "target": "show 1, seat 3, 500 VUs, http://localhost:3000",
+      "seeded_before_run": {
+        "booking_seats_rows": 11,
+        "note": "fresh seed before every run"
+      },
+      "k6": {
+        "iterations": 500,
+        "dropped_iterations": 0,
+        "booking_attempts": 500,
+        "created_201": 1,
+        "conflict_409": 499,
+        "other_4xx": 0,
+        "server_error_5xx": 0,
+        "no_response": 0,
+        "http_req_failed_rate": 0,
+        "http_req_duration_ms": {
+          "avg": 933.6861786520002,
+          "p95": 1139.5015389,
+          "max": 1150.885982
+        }
+      },
+      "database": {
+        "double_bookings": 0,
+        "method": "loadtest/count-double-bookings.sql — sum(claims-1) over booking_seats joined to non-cancelled bookings, grouped by (show_id, seat_id)",
+        "consistency_check": {
+          "expected_double_bookings": 0,
+          "matches": true,
+          "note": "exactly one 201 means exactly one claim on the seat; there is no second claim to be a duplicate"
+        },
+        "rows_after_run": {
+          "bookings": 6,
+          "booking_seat_rows": 12,
+          "distinct_seats_claimed": 12
+        }
+      },
+      "observations": {
+        "max_concurrent_server_side_queries": null,
+        "sampling": "NOT SAMPLED in 2.5 — the sampler did not record. The 2.3 artifact has this observation; 2.5 does not. It was an observation, not a controlled measurement, and no claim here depends on it."
+      },
+      "k6_summary_raw": {
+        "options": {
+          "summaryTrendStats": [
+            "avg",
+            "min",
+            "med",
+            "max",
+            "p(90)",
+            "p(95)"
+          ],
+          "summaryTimeUnit": "",
+          "noColor": false
+        },
+        "state": {
+          "isStdOutTTY": false,
+          "isStdErrTTY": false,
+          "testRunDurationMs": 4330.196225
+        },
+        "metrics": {
+          "http_req_sending": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 7.785135209163347,
+              "min": 0.015095,
+              "med": 5.8153055,
+              "max": 50.841257,
+              "p(90)": 13.142078900000001,
+              "p(95)": 15.0829029
+            }
+          },
+          "vus": {
+            "type": "gauge",
+            "contains": "default",
+            "values": {
+              "value": 446,
+              "min": 446,
+              "max": 500
+            }
+          },
+          "http_req_connecting": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 30.058815418326706,
+              "min": 0.094102,
+              "med": 28.434753,
+              "max": 58.05505,
+              "p(90)": 46.7161477,
+              "p(95)": 48.676705049999995
+            }
+          },
+          "iterations": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 500,
+              "rate": 115.46820837201206
+            }
+          },
+          "http_req_receiving": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "min": 0.013556,
+              "med": 0.0570745,
+              "max": 1.778343,
+              "p(90)": 0.1318351000000002,
+              "p(95)": 0.20979639999999983,
+              "avg": 0.08492011553784858
+            }
+          },
+          "data_received": {
+            "type": "counter",
+            "contains": "data",
+            "values": {
+              "rate": 40557.053508585515,
+              "count": 175620
+            }
+          },
+          "http_reqs": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 502,
+              "rate": 115.9300812055001
+            }
+          },
+          "http_req_tls_handshaking": {
+            "values": {
+              "min": 0,
+              "med": 0,
+              "max": 0,
+              "p(90)": 0,
+              "p(95)": 0,
+              "avg": 0
+            },
+            "type": "trend",
+            "contains": "time"
+          },
+          "http_req_waiting": {
+            "values": {
+              "min": 11.189313,
+              "med": 932.084798,
+              "max": 1146.855097,
+              "p(90)": 1109.4722187,
+              "p(95)": 1133.1052132,
+              "avg": 922.3146760657376
+            },
+            "type": "trend",
+            "contains": "time"
+          },
+          "vus_max": {
+            "type": "gauge",
+            "contains": "default",
+            "values": {
+              "value": 500,
+              "min": 500,
+              "max": 500
+            }
+          },
+          "booking_created": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 1,
+              "rate": 0.23093641674402413
+            }
+          },
+          "iteration_duration": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "med": 3973.5038225,
+              "max": 4220.302186,
+              "p(90)": 4179.5274845,
+              "p(95)": 4200.2522146,
+              "avg": 3982.4513030059975,
+              "min": 3740.416385
+            }
+          },
+          "http_req_duration{endpoint:booking}": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 933.6861786520002,
+              "min": 695.555786,
+              "med": 933.736052,
+              "max": 1150.885982,
+              "p(90)": 1115.9408968,
+              "p(95)": 1139.5015389
+            },
+            "thresholds": {
+              "max>=0": {
+                "ok": true
+              }
+            }
+          },
+          "http_req_duration{expected_response:true}": {
+            "contains": "time",
+            "values": {
+              "min": 11.375204,
+              "med": 933.333182,
+              "max": 1150.885982,
+              "p(90)": 1115.925524,
+              "p(95)": 1139.2306293499998,
+              "avg": 930.1847313904383
+            },
+            "type": "trend"
+          },
+          "data_sent": {
+            "type": "counter",
+            "contains": "data",
+            "values": {
+              "count": 175821,
+              "rate": 40603.47172835106
+            }
+          },
+          "http_req_duration": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "max": 1150.885982,
+              "p(90)": 1115.925524,
+              "p(95)": 1139.2306293499998,
+              "avg": 930.1847313904383,
+              "min": 11.375204,
+              "med": 933.333182
+            }
+          },
+          "booking_conflict": {
+            "contains": "default",
+            "values": {
+              "count": 499,
+              "rate": 115.23727195526803
+            },
+            "type": "counter"
+          },
+          "http_req_failed{endpoint:booking}": {
+            "values": {
+              "rate": 0,
+              "passes": 0,
+              "fails": 500
+            },
+            "thresholds": {
+              "rate>=0": {
+                "ok": true
+              }
+            },
+            "type": "rate",
+            "contains": "default"
+          },
+          "http_req_blocked": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "max": 73.32071,
+              "p(90)": 47.2728754,
+              "p(95)": 48.963440649999995,
+              "avg": 30.834749643426296,
+              "min": 0.23474,
+              "med": 29.4994315
+            }
+          },
+          "http_req_failed": {
+            "type": "rate",
+            "contains": "default",
+            "values": {
+              "rate": 0,
+              "passes": 0,
+              "fails": 502
+            }
+          }
+        },
+        "setup_data": {
+          "token": "<redacted: bearer token, not part of the measurement>",
+          "seatId": "3",
+          "showId": "1",
+          "startAt": 1787169143397
+        },
+        "root_group": {
+          "checks": [],
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": []
+        }
+      }
+    },
+    {
+      "run": 2,
+      "target": "show 1, seat 3, 500 VUs, http://localhost:3000",
+      "seeded_before_run": {
+        "booking_seats_rows": 11,
+        "note": "fresh seed before every run"
+      },
+      "k6": {
+        "iterations": 500,
+        "dropped_iterations": 0,
+        "booking_attempts": 500,
+        "created_201": 1,
+        "conflict_409": 499,
+        "other_4xx": 0,
+        "server_error_5xx": 0,
+        "no_response": 0,
+        "http_req_failed_rate": 0,
+        "http_req_duration_ms": {
+          "avg": 539.0014259540001,
+          "p95": 734.87552745,
+          "max": 746.727147
+        }
+      },
+      "database": {
+        "double_bookings": 0,
+        "method": "loadtest/count-double-bookings.sql — sum(claims-1) over booking_seats joined to non-cancelled bookings, grouped by (show_id, seat_id)",
+        "consistency_check": {
+          "expected_double_bookings": 0,
+          "matches": true,
+          "note": "exactly one 201 means exactly one claim on the seat; there is no second claim to be a duplicate"
+        },
+        "rows_after_run": {
+          "bookings": 6,
+          "booking_seat_rows": 12,
+          "distinct_seats_claimed": 12
+        }
+      },
+      "observations": {
+        "max_concurrent_server_side_queries": null,
+        "sampling": "NOT SAMPLED in 2.5 — the sampler did not record. The 2.3 artifact has this observation; 2.5 does not. It was an observation, not a controlled measurement, and no claim here depends on it."
+      },
+      "k6_summary_raw": {
+        "state": {
+          "isStdOutTTY": false,
+          "isStdErrTTY": false,
+          "testRunDurationMs": 3907.497231
+        },
+        "metrics": {
+          "http_req_waiting": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 528.7944019482077,
+              "min": 4.760265,
+              "med": 527.4309860000001,
+              "max": 746.595045,
+              "p(90)": 725.3335209,
+              "p(95)": 734.80232295
+            }
+          },
+          "http_req_duration": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "p(90)": 725.7718615000001,
+              "p(95)": 734.84229155,
+              "avg": 537.0162038167332,
+              "min": 4.968823,
+              "med": 527.734375,
+              "max": 746.727147
+            }
+          },
+          "http_reqs": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 502,
+              "rate": 128.4709803547395
+            }
+          },
+          "data_received": {
+            "contains": "data",
+            "values": {
+              "count": 175620,
+              "rate": 44944.36966115409
+            },
+            "type": "counter"
+          },
+          "booking_created": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 1,
+              "rate": 0.25591828755924206
+            }
+          },
+          "iteration_duration": {
+            "contains": "time",
+            "values": {
+              "p(90)": 3796.2494467,
+              "p(95)": 3806.81290045,
+              "avg": 3588.5573902079964,
+              "min": 3284.942266,
+              "med": 3596.504729,
+              "max": 3822.920888
+            },
+            "type": "trend"
+          },
+          "iterations": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 500,
+              "rate": 127.95914377962103
+            }
+          },
+          "http_req_duration{expected_response:true}": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 537.0162038167332,
+              "min": 4.968823,
+              "med": 527.734375,
+              "max": 746.727147,
+              "p(90)": 725.7718615000001,
+              "p(95)": 734.84229155
+            }
+          },
+          "http_req_tls_handshaking": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "min": 0,
+              "med": 0,
+              "max": 0,
+              "p(90)": 0,
+              "p(95)": 0,
+              "avg": 0
+            }
+          },
+          "vus": {
+            "type": "gauge",
+            "contains": "default",
+            "values": {
+              "value": 500,
+              "min": 500,
+              "max": 500
+            }
+          },
+          "http_req_duration{endpoint:booking}": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "p(90)": 726.0778173,
+              "p(95)": 734.87552745,
+              "avg": 539.0014259540001,
+              "min": 271.634995,
+              "med": 528.693087,
+              "max": 746.727147
+            },
+            "thresholds": {
+              "max>=0": {
+                "ok": true
+              }
+            }
+          },
+          "http_req_sending": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "p(95)": 40.338898849999985,
+              "avg": 8.153104402390435,
+              "min": 0.009179,
+              "med": 1.260683,
+              "max": 48.797761,
+              "p(90)": 34.5073404
+            }
+          },
+          "vus_max": {
+            "type": "gauge",
+            "contains": "default",
+            "values": {
+              "value": 500,
+              "min": 500,
+              "max": 500
+            }
+          },
+          "booking_conflict": {
+            "contains": "default",
+            "values": {
+              "count": 499,
+              "rate": 127.70322549206178
+            },
+            "type": "counter"
+          },
+          "http_req_receiving": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 0.06869746613545819,
+              "min": 0.014398,
+              "med": 0.052444000000000005,
+              "max": 1.02038,
+              "p(90)": 0.11804150000000005,
+              "p(95)": 0.15936229999999998
+            }
+          },
+          "http_req_blocked": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 15.912138772908369,
+              "min": 0.030246,
+              "med": 12.543433,
+              "max": 74.729871,
+              "p(90)": 32.251553400000006,
+              "p(95)": 38.321503899999996
+            }
+          },
+          "http_req_connecting": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "p(95)": 36.09516144999999,
+              "avg": 15.11672874302787,
+              "min": 0.016683,
+              "med": 12.248477000000001,
+              "max": 61.616596,
+              "p(90)": 32.0607969
+            }
+          },
+          "data_sent": {
+            "values": {
+              "count": 175821,
+              "rate": 44995.80923695349
+            },
+            "type": "counter",
+            "contains": "data"
+          },
+          "http_req_failed{endpoint:booking}": {
+            "type": "rate",
+            "contains": "default",
+            "values": {
+              "rate": 0,
+              "passes": 0,
+              "fails": 500
+            },
+            "thresholds": {
+              "rate>=0": {
+                "ok": true
+              }
+            }
+          },
+          "http_req_failed": {
+            "values": {
+              "rate": 0,
+              "passes": 0,
+              "fails": 502
+            },
+            "type": "rate",
+            "contains": "default"
+          }
+        },
+        "setup_data": {
+          "seatId": "3",
+          "showId": "1",
+          "startAt": 1787169149290,
+          "token": "<redacted: bearer token, not part of the measurement>"
+        },
+        "root_group": {
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e",
+          "groups": [],
+          "checks": []
+        },
+        "options": {
+          "summaryTrendStats": [
+            "avg",
+            "min",
+            "med",
+            "max",
+            "p(90)",
+            "p(95)"
+          ],
+          "summaryTimeUnit": "",
+          "noColor": false
+        }
+      }
+    },
+    {
+      "run": 3,
+      "target": "show 1, seat 3, 500 VUs, http://localhost:3000",
+      "seeded_before_run": {
+        "booking_seats_rows": 11,
+        "note": "fresh seed before every run"
+      },
+      "k6": {
+        "iterations": 500,
+        "dropped_iterations": 0,
+        "booking_attempts": 500,
+        "created_201": 1,
+        "conflict_409": 499,
+        "other_4xx": 0,
+        "server_error_5xx": 0,
+        "no_response": 0,
+        "http_req_failed_rate": 0,
+        "http_req_duration_ms": {
+          "avg": 682.2878842920001,
+          "p95": 831.90487535,
+          "max": 842.734819
+        }
+      },
+      "database": {
+        "double_bookings": 0,
+        "method": "loadtest/count-double-bookings.sql — sum(claims-1) over booking_seats joined to non-cancelled bookings, grouped by (show_id, seat_id)",
+        "consistency_check": {
+          "expected_double_bookings": 0,
+          "matches": true,
+          "note": "exactly one 201 means exactly one claim on the seat; there is no second claim to be a duplicate"
+        },
+        "rows_after_run": {
+          "bookings": 6,
+          "booking_seat_rows": 12,
+          "distinct_seats_claimed": 12
+        }
+      },
+      "observations": {
+        "max_concurrent_server_side_queries": null,
+        "sampling": "NOT SAMPLED in 2.5 — the sampler did not record. The 2.3 artifact has this observation; 2.5 does not. It was an observation, not a controlled measurement, and no claim here depends on it."
+      },
+      "k6_summary_raw": {
+        "setup_data": {
+          "seatId": "3",
+          "showId": "1",
+          "startAt": 1787169154742,
+          "token": "<redacted: bearer token, not part of the measurement>"
+        },
+        "root_group": {
+          "groups": [],
+          "checks": [],
+          "name": "",
+          "path": "",
+          "id": "d41d8cd98f00b204e9800998ecf8427e"
+        },
+        "options": {
+          "summaryTrendStats": [
+            "avg",
+            "min",
+            "med",
+            "max",
+            "p(90)",
+            "p(95)"
+          ],
+          "summaryTimeUnit": "",
+          "noColor": false
+        },
+        "state": {
+          "isStdOutTTY": false,
+          "isStdErrTTY": false,
+          "testRunDurationMs": 3968.138202
+        },
+        "metrics": {
+          "data_received": {
+            "type": "counter",
+            "contains": "data",
+            "values": {
+              "count": 175620,
+              "rate": 44257.531129204355
+            }
+          },
+          "http_req_connecting": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 16.561504268924292,
+              "min": 0.033286,
+              "med": 17.536837,
+              "max": 30.102467,
+              "p(90)": 27.468636500000002,
+              "p(95)": 28.5781444
+            }
+          },
+          "http_req_receiving": {
+            "values": {
+              "avg": 0.07924644422310761,
+              "min": 0.014513,
+              "med": 0.0555235,
+              "max": 1.034761,
+              "p(90)": 0.13813720000000002,
+              "p(95)": 0.25201144999999997
+            },
+            "type": "trend",
+            "contains": "time"
+          },
+          "data_sent": {
+            "type": "counter",
+            "contains": "data",
+            "values": {
+              "count": 175821,
+              "rate": 44308.184606923125
+            }
+          },
+          "iterations": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 500,
+              "rate": 126.0036759173339
+            }
+          },
+          "http_req_duration": {
+            "contains": "time",
+            "values": {
+              "med": 690.3130555,
+              "max": 842.734819,
+              "p(90)": 818.9622298,
+              "p(95)": 831.88309855,
+              "avg": 679.7353106752988,
+              "min": 5.487989
+            },
+            "type": "trend"
+          },
+          "http_req_failed{endpoint:booking}": {
+            "type": "rate",
+            "contains": "default",
+            "values": {
+              "rate": 0,
+              "passes": 0,
+              "fails": 500
+            },
+            "thresholds": {
+              "rate>=0": {
+                "ok": true
+              }
+            }
+          },
+          "http_reqs": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 502,
+              "rate": 126.50769062100322
+            }
+          },
+          "http_req_blocked": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "min": 0.052051,
+              "med": 17.5583805,
+              "max": 30.139244,
+              "p(90)": 27.4809175,
+              "p(95)": 28.5951683,
+              "avg": 16.63102150199202
+            }
+          },
+          "http_req_failed": {
+            "type": "rate",
+            "contains": "default",
+            "values": {
+              "fails": 502,
+              "rate": 0,
+              "passes": 0
+            }
+          },
+          "http_req_waiting": {
+            "contains": "time",
+            "values": {
+              "avg": 678.3330258386457,
+              "min": 5.267772,
+              "med": 688.726965,
+              "max": 842.619781,
+              "p(90)": 818.138811,
+              "p(95)": 831.2967121
+            },
+            "type": "trend"
+          },
+          "vus": {
+            "contains": "default",
+            "values": {
+              "value": 107,
+              "min": 107,
+              "max": 500
+            },
+            "type": "gauge"
+          },
+          "booking_created": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 1,
+              "rate": 0.25200735183466777
+            }
+          },
+          "vus_max": {
+            "type": "gauge",
+            "contains": "default",
+            "values": {
+              "value": 500,
+              "min": 500,
+              "max": 500
+            }
+          },
+          "http_req_duration{endpoint:booking}": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "avg": 682.2878842920001,
+              "min": 494.778811,
+              "med": 690.490268,
+              "max": 842.734819,
+              "p(90)": 818.9658762,
+              "p(95)": 831.90487535
+            },
+            "thresholds": {
+              "max>=0": {
+                "ok": true
+              }
+            }
+          },
+          "booking_conflict": {
+            "type": "counter",
+            "contains": "default",
+            "values": {
+              "count": 499,
+              "rate": 125.75166856549922
+            }
+          },
+          "iteration_duration": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "max": 3881.26962,
+              "p(90)": 3854.8108066000004,
+              "p(95)": 3868.29849405,
+              "avg": 3713.8797101140003,
+              "min": 3524.713975,
+              "med": 3720.438048
+            }
+          },
+          "http_req_duration{expected_response:true}": {
+            "values": {
+              "avg": 679.7353106752988,
+              "min": 5.487989,
+              "med": 690.3130555,
+              "max": 842.734819,
+              "p(90)": 818.9622298,
+              "p(95)": 831.88309855
+            },
+            "type": "trend",
+            "contains": "time"
+          },
+          "http_req_sending": {
+            "type": "trend",
+            "contains": "time",
+            "values": {
+              "p(90)": 3.7930043,
+              "p(95)": 4.093300899999998,
+              "avg": 1.3230383924302782,
+              "min": 0.009413,
+              "med": 0.699363,
+              "max": 11.017005
+            }
+          },
+          "http_req_tls_handshaking": {
+            "values": {
+              "min": 0,
+              "med": 0,
+              "max": 0,
+              "p(90)": 0,
+              "p(95)": 0,
+              "avg": 0
+            },
+            "type": "trend",
+            "contains": "time"
+          }
+        }
+      }
+    }
+  ],
+  "result": {
+    "double_bookings_per_run": [
+      0,
+      0,
+      0
+    ],
+    "min": 0,
+    "max": 0,
+    "run_count": 3,
+    "headline": "Zero seats sold twice out of 500 concurrent attempts on a single seat, across 3 runs. Exactly one attempt succeeded each time; the other 499 were rejected with 409.",
+    "load_landed": {
+      "iterations_per_run": 500,
+      "dropped_iterations_total": 0,
+      "server_errors_total": 0,
+      "no_response_total": 0,
+      "note": "Every attempt landed and was answered. Zero double-bookings here is a result, not an absence of load."
+    },
+    "latency_note": "p95 for the booking request across the three runs: 1139.5ms, 734.9ms, 831.9ms. Recorded because k6 reports it, not as a throughput or capacity claim — 500 VUs against a pool of 10 measures queueing, not the system ceiling.",
+    "not_measured": [
+      "throughput or capacity ceilings",
+      "behaviour above 500 VUs",
+      "behaviour with a pool larger than 10",
+      "production or deployed behaviour — this ran locally only",
+      "hold behaviour, Redis under load, WebSocket anything — later phases"
+    ]
+  },
+  "third_data_point": {
+    "what": "BOOKING_MODE=naive against a database that already has the 002 constraint.",
+    "why": "Separates the constraint from the error handling. The constraint alone prevents the double-booking; the safe path is what turns the rejection into a clean 409 instead of a 500.",
+    "this_is_not_the_before_number": "The before-number requires a database at migration state 001. See docs/phases/phase-2-booking-core.md §14.",
+    "k6": {
+      "iterations": 500,
+      "dropped_iterations": 0,
+      "booking_attempts": 500,
+      "created_201": 1,
+      "conflict_409": 195,
+      "other_4xx": 0,
+      "server_error_5xx": 304,
+      "no_response": 0,
+      "http_req_failed_rate": 0.608,
+      "http_req_duration_ms": {
+        "avg": 3078.3195887459983,
+        "p95": 4241.1010741,
+        "max": 4366.616285
+      }
+    },
+    "database": {
+      "double_bookings": 0
+    },
+    "reading": "One 201, 195 pre-check 409s, and 304 responses that were 5xx because the naive path does not catch 23505 — the database refused every duplicate. Zero double-bookings. The naive code is unchanged; only the schema underneath it differs.",
+    "server_log_evidence": "608 occurrences of 'duplicate key value violates unique constraint \"booking_seats_show_id_seat_id_key\"' in the server log, raised from createBookingNaive.",
+    "k6_summary_raw": {
+      "metrics": {
+        "http_req_connecting": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "p(95)": 22.4380045,
+            "avg": 13.1680211434263,
+            "min": 0.020387,
+            "med": 13.5537645,
+            "max": 25.893332,
+            "p(90)": 21.1685295
+          }
+        },
+        "http_req_duration{expected_response:true}": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "avg": 3389.3053860505056,
+            "min": 100.449891,
+            "med": 3639.5863035,
+            "max": 4361.224088,
+            "p(90)": 4241.039683399999,
+            "p(95)": 4301.93775205
+          }
+        },
+        "http_req_sending": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "avg": 3.4830338585657366,
+            "min": 0.051803,
+            "med": 1.0782720000000001,
+            "max": 27.777474,
+            "p(90)": 13.059792400000001,
+            "p(95)": 13.95924215
+          }
+        },
+        "booking_created": {
+          "values": {
+            "count": 1,
+            "rate": 0.1301909414000932
+          },
+          "type": "counter",
+          "contains": "default"
+        },
+        "http_req_failed{endpoint:booking}": {
+          "type": "rate",
+          "contains": "default",
+          "values": {
+            "rate": 0.608,
+            "passes": 304,
+            "fails": 196
+          },
+          "thresholds": {
+            "rate>=0": {
+              "ok": true
+            }
+          }
+        },
+        "vus": {
+          "type": "gauge",
+          "contains": "default",
+          "values": {
+            "value": 127,
+            "min": 127,
+            "max": 500
+          }
+        },
+        "iteration_duration": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "max": 7409.240905,
+            "p(90)": 7149.069131,
+            "p(95)": 7290.0103589,
+            "avg": 6105.056377112003,
+            "min": 4876.810339,
+            "med": 6077.572103
+          }
+        },
+        "http_req_duration{endpoint:booking}": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "p(95)": 4241.1010741,
+            "avg": 3078.3195887459983,
+            "min": 1857.597861,
+            "med": 3062.4536825,
+            "max": 4366.616285,
+            "p(90)": 4099.0092821
+          },
+          "thresholds": {
+            "max>=0": {
+              "ok": true
+            }
+          }
+        },
+        "http_req_blocked": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "avg": 13.922648705179284,
+            "min": 0.045146,
+            "med": 13.836359999999999,
+            "max": 51.674708,
+            "p(90)": 21.7546981,
+            "p(95)": 23.84550865
+          }
+        },
+        "data_sent": {
+          "type": "counter",
+          "contains": "data",
+          "values": {
+            "count": 175821,
+            "rate": 22890.301507905788
+          }
+        },
+        "iterations": {
+          "type": "counter",
+          "contains": "default",
+          "values": {
+            "count": 500,
+            "rate": 65.0954707000466
+          }
+        },
+        "http_req_receiving": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "p(90)": 0.1543611,
+            "p(95)": 0.18451364999999997,
+            "avg": 0.12511368525896413,
+            "min": 0.026577,
+            "med": 0.113089,
+            "max": 2.341721
+          }
+        },
+        "http_req_failed": {
+          "type": "rate",
+          "contains": "default",
+          "values": {
+            "rate": 0.6055776892430279,
+            "passes": 304,
+            "fails": 198
+          }
+        },
+        "http_req_waiting": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "avg": 3062.9765025677293,
+            "min": 100.218491,
+            "med": 3057.7532739999997,
+            "max": 4361.462286,
+            "p(90)": 4096.0123225,
+            "p(95)": 4240.03274285
+          }
+        },
+        "booking_conflict": {
+          "type": "counter",
+          "contains": "default",
+          "values": {
+            "count": 195,
+            "rate": 25.387233573018175
+          }
+        },
+        "data_received": {
+          "type": "counter",
+          "contains": "data",
+          "values": {
+            "count": 169540,
+            "rate": 22072.572204971802
+          }
+        },
+        "vus_max": {
+          "type": "gauge",
+          "contains": "default",
+          "values": {
+            "max": 500,
+            "value": 500,
+            "min": 500
+          }
+        },
+        "booking_server_error": {
+          "contains": "default",
+          "values": {
+            "count": 304,
+            "rate": 39.57804618562834
+          },
+          "type": "counter"
+        },
+        "http_req_tls_handshaking": {
+          "values": {
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0,
+            "max": 0,
+            "p(90)": 0
+          },
+          "type": "trend",
+          "contains": "time"
+        },
+        "http_req_duration": {
+          "type": "trend",
+          "contains": "time",
+          "values": {
+            "p(95)": 4241.0922606,
+            "avg": 3066.584650111552,
+            "min": 100.449891,
+            "med": 3058.9637365,
+            "max": 4366.616285,
+            "p(90)": 4098.493419699999
+          }
+        },
+        "http_reqs": {
+          "type": "counter",
+          "contains": "default",
+          "values": {
+            "count": 502,
+            "rate": 65.3558525828468
+          }
+        }
+      },
+      "setup_data": {
+        "showId": "1",
+        "startAt": 1787169165300,
+        "token": "<redacted: bearer token, not part of the measurement>",
+        "seatId": "3"
+      },
+      "root_group": {
+        "name": "",
+        "path": "",
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": [],
+        "checks": []
+      },
+      "options": {
+        "summaryTrendStats": [
+          "avg",
+          "min",
+          "med",
+          "max",
+          "p(90)",
+          "p(95)"
+        ],
+        "summaryTimeUnit": "",
+        "noColor": false
+      },
+      "state": {
+        "isStdOutTTY": false,
+        "isStdErrTTY": false,
+        "testRunDurationMs": 7681.025955
+      }
+    }
+  },
+  "reproduce": "loadtest/README.md — \"After (safe)\". Fresh seed, npm run migrate (applies 001 and 002), server with BOOKING_MODE=safe, then the same k6 invocation and the counting SQL.",
+  "redactions": [
+    {
+      "path": "runs[].k6_summary_raw.setup_data.token and third_data_point.k6_summary_raw.setup_data.token",
+      "occurrences": 4,
+      "action": "redacted at generation time by loadtest/seat-contention.js",
+      "reason": "k6 embeds whatever setup() returned under setup_data, and setup() returns a live bearer token. Commit 2bcba13 made handleSummary strip it before writing, so unlike the 2.3 artifact this one never contained a credential at any point.",
+      "measurement_data_altered": false
+    }
+  ]
+}
