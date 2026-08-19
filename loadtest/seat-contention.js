@@ -149,6 +149,18 @@ function ms(n) {
   return `${n.toFixed(1)}ms`;
 }
 
+// k6 embeds whatever setup() returned into the summary under setup_data, and
+// setup() returns a live bearer token. Written verbatim, every recorded run
+// would commit a working credential into loadtest/results/. The token is not
+// part of any measurement, so it is replaced before anything is written.
+// Nothing else in the summary is touched.
+const REDACTED = '<redacted: bearer token, not part of the measurement>';
+
+function withoutCredentials(summary) {
+  if (!summary || !summary.setup_data) return summary;
+  return { ...summary, setup_data: { ...summary.setup_data, token: REDACTED } };
+}
+
 export function handleSummary(data) {
   const attempts =
     value(data, 'booking_created', 'count') +
@@ -187,9 +199,10 @@ export function handleSummary(data) {
   const out = { stdout: lines.join('\n') };
 
   // Raw evidence for the phase record, written only when asked for, so a
-  // rehearsal run cannot overwrite a recorded measurement.
+  // rehearsal run cannot overwrite a recorded measurement. Credentials are
+  // stripped first — see withoutCredentials above.
   if (__ENV.SUMMARY_OUT) {
-    out[__ENV.SUMMARY_OUT] = JSON.stringify(data, null, 2);
+    out[__ENV.SUMMARY_OUT] = JSON.stringify(withoutCredentials(data), null, 2);
   }
 
   return out;
