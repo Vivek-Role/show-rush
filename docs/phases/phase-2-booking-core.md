@@ -1,11 +1,17 @@
 # Phase 2 — Booking correctness
 
-**Status:** APPROVED — not yet implementing. No Phase 2 code exists.
-**Branch:** `feat/booking-core`, from `main` @ `12be6e7`
+**Status:** IMPLEMENTED and MEASURED — close-out in §22. Not merged.
+**Branch:** `feat/booking-core` @ `2c028b6`, from `main` @ `12be6e7`
 **Source of truth:** `PLAN.md` §Phase 2, `BACKLOG.md`, `docs/phases/phase-1-foundation.md`
 **Rules:** `CLAUDE.md` — not restated here
 **Plan written:** 2026-08-20
 **Plan approved:** 2026-08-20 — decisions Q1–Q9 resolved in §19
+**Close-out written:** 2026-08-20
+
+> §§1–20 are the plan **as approved before implementation**, preserved as
+> written. Where implementation diverged, the divergence is marked inline as
+> **superseded** and explained in §22 — the plan is not rewritten to look
+> correct after the fact (`CLAUDE.md` §9).
 
 ---
 
@@ -136,6 +142,11 @@ POST /api/bookings   Bearer <token>
   409 SEATS_UNAVAILABLE     at least one seat is already taken
   501 NOT_IMPLEMENTED       BOOKING_MODE=safe, until 2.4 lands
 ```
+
+> **The 501 is superseded.** It was the Module 2.1 contract only. Module 2.4
+> implemented the safe path, so `BOOKING_MODE=safe` now returns 201 / 409 like
+> the naive path and no code path returns 501. Decisions D3 and Q2 are left as
+> written — they record why the stub existed, and that reasoning still holds.
 
 `booking.status` is `'pending'` — Phase 5 owns the transition to `'paid'`.
 `booking_ref` is generated in the application from `node:crypto`; no new
@@ -766,6 +777,17 @@ Recommended shape: `loadtest/README.md` records the exact commands, and the
 alternative (a `--to` flag on the migration runner) if a single command is
 preferred.
 
+> **Superseded 2026-08-20 — `loadtest/README.md` is authoritative for the
+> commands.** The block above says "`npm run migrate` — 001 only; 002 removed
+> from the dir", which would mean moving a migration file out of the repository
+> to take a measurement. The procedure actually used applies
+> `server/migrations/001_init.sql` **directly via psql** to a disposable
+> database, so `server/migrations/` is never touched and `002` is simply never
+> applied. `schema_migrations` is absent in that database rather than empty,
+> because the runner never runs against it.
+>
+> That form was executed at close-out and reproduced the race — see §22.
+
 ---
 
 ## 15. Deferred discoveries
@@ -876,6 +898,12 @@ pool sizing is Phase 7.3b architecture.
 These are environment facts, not benchmarks. **No performance number has been
 measured. All benchmark cells in §9 read "not measured."**
 
+> **Superseded 2026-08-20.** True when written, at planning time. Modules 2.3
+> and 2.5 have since measured both numbers and §9's table is filled from the
+> raw artifacts under `loadtest/results/`. The sentence above is kept because
+> it records what was and was not claimed *before* any measurement existed —
+> which is the point of the discipline, not an embarrassment to erase.
+
 ### Unnecessary complexity removed
 
 - **No booking read endpoints.** Not required by the done-when criteria.
@@ -957,32 +985,38 @@ exact file, the minimum change, and wait.
 
 Merge to `main` is requested only when **every** line below is true and recorded.
 
-- [ ] All five modules implemented, one commit each on `feat/booking-core`
-- [ ] Per-module verification recorded PASS / FAIL / NOT RUN / NOT VERIFIED
-- [ ] `POST /api/bookings` works in both modes; `naive` still racy, `safe` correct
-- [ ] `002` applied locally; `pg_indexes` confirms the unique index
-- [ ] **Before-number recorded**, non-zero, with proof the load landed
-- [ ] **After-number recorded as 0**, same workload, same VU count
-- [ ] Both raw k6 summaries committed under `loadtest/results/`
-- [ ] Method recorded in full for both runs (§9 method line)
-- [ ] `loadtest/` committed: script, counting SQL, README with the reproduction
+Ticked at close-out, 2026-08-20, against the state at `2c028b6`. Evidence for
+each is in §22.
+
+- [x] All five modules implemented, one commit each on `feat/booking-core`
+- [x] Per-module verification recorded PASS / FAIL / NOT RUN / NOT VERIFIED
+- [x] `POST /api/bookings` works in both modes; `naive` still racy, `safe` correct
+- [x] `002` applied locally; `pg_indexes` confirms the unique index
+- [x] **Before-number recorded**, non-zero, with proof the load landed
+- [x] **After-number recorded as 0**, same workload, same VU count
+- [x] Both raw k6 summaries committed under `loadtest/results/`
+- [x] Method recorded in full for both runs (§9 method line)
+- [x] `loadtest/` committed: script, counting SQL, README with the reproduction
       procedure (§14)
 - [ ] `README.md` benchmark table carries both numbers with their commands
-- [ ] The naive path is present, functional, and un-hardened after 2.4
-- [ ] Phase 1 regression sweep passed: `/`, `/health`, movies, shows, seatmap,
+      — **outstanding**, close-out item 3, separately authorized commit
+- [x] The naive path is present, functional, and un-hardened after 2.4
+- [x] Phase 1 regression sweep passed: `/`, `/health`, movies, shows, seatmap,
       register, login, `/me`
-- [ ] `/health` and `GET /` byte-identical to the Phase 0/1 baseline
-- [ ] No out-of-scope file touched; `package*.json` unmodified; zero new
+- [x] `/health` and `GET /` byte-identical to the Phase 0/1 baseline
+- [x] No out-of-scope file touched; `package*.json` unmodified; zero new
       dependencies
-- [ ] No control file modified
+- [x] No control file modified
 - [ ] `002` applied to Neon and confirmed (authorized separately)
+      — **outstanding**, close-out item 5, requires explicit authorization
 - [ ] Deployed verification passed (§13), functional only — no production load test
-- [ ] Deferred findings recorded; nothing silently fixed
-- [ ] `git status` clean of `.env` and `node_modules`; no secrets tracked
-- [ ] No AI attribution in any commit or file
-- [ ] This document updated with the close-out section
-- [ ] Integration review across Phase 0/1/2 performed and reported
-- [ ] Merge **not** performed until explicitly authorized
+      — **outstanding**, close-out items 6 and 7
+- [x] Deferred findings recorded; nothing silently fixed
+- [x] `git status` clean of `.env` and `node_modules`; no secrets tracked
+- [x] No AI attribution in any commit or file
+- [x] This document updated with the close-out section
+- [x] Integration review across Phase 0/1/2 performed and reported
+- [x] Merge **not** performed until explicitly authorized — not merged
 
 **Non-negotiable:** if the before-number is not reproducible by the §14
 procedure at close-out, the phase is not done. `PLAN.md` names it as one of two
@@ -1059,3 +1093,285 @@ Recommended action: none required. If symmetry matters at close-out, re-run
 `README.md`'s benchmark table still carries neither number. §17 marks that a
 **separately authorized commit**, and it remains outstanding — the 2.5
 done-when criteria are not fully met until it lands.
+
+---
+
+## 22. Phase close-out
+
+**Status:** IMPLEMENTED, MEASURED and REVIEWED. **Not merged, not deployed.**
+**Completed:** 2026-08-20 · branch `feat/booking-core` @ `2c028b6`
+**Outstanding before merge:** close-out items 3, 5, 6 and 7 (see the end of this
+section).
+
+Phase 2 set out to produce two defensible numbers and a documented method for
+reproducing both. It has them: **150–303 double-booked seats before, 0 after**,
+under an identical 500-VU workload, both re-runnable today.
+
+### Built
+
+| Module | Commit | What landed |
+|---|---|---|
+| 2.1 Naive booking endpoint | `3aaf36b` | `services/bookingService.js`, `routes/bookings.js`; `BOOKING_MODE` in `config/env.js` with a production guard; `seatIdList`/`idValue` in `lib/validate.js`; one mount line in `app.js`; `.env.example`. Deliberately racy check-then-insert |
+| 2.2 k6 contention script | `a372d09` | `loadtest/seat-contention.js`, `loadtest/count-double-bookings.sql`, `loadtest/README.md` |
+| — corrective | `2bcba13` | `handleSummary` strips `setup_data.token` before writing any summary — see "Security incident" below |
+| 2.3 Baseline run | `76ae650` | `loadtest/results/2.3-naive-2026-08-19.json` — the before-number |
+| 2.4 The fix | `3946e16` | `server/migrations/002_unique_booking_seats.sql` and `createBookingSafe` |
+| 2.5 Verification run | `2c028b6` | `loadtest/results/2.5-safe-2026-08-19.json` — the after-number, and §21 |
+
+Plus `67cc222`, this document. Seven commits, 13 files, **4149 insertions and
+zero deletions** — no Phase 0 or Phase 1 code was removed or rewritten.
+
+### The two numbers
+
+| Metric | Before — `naive` | After — `safe` |
+|---|---|---|
+| Double-booked seats (3 runs) | **303, 150, 303** | **0, 0, 0** |
+| 201 / 409 per run | 304/196 · 151/349 · 304/196 | 1/499 × 3 |
+| Dropped iterations · 5xx · no-response | 0 · 0 · 0 | 0 · 0 · 0 |
+
+Identical workload both sides: 500 VUs, `per-vu-iterations`, one iteration each,
+3 s start barrier, show 1, seat 3, fresh seed before every run, `pg.Pool` at the
+default max of 10, `read committed` asserted by the server at runtime, local
+Docker Postgres 17.11 on port 5433, k6 v2.2.0, Node v22.23.2, `collab-*`
+containers stopped for the duration of every measured run.
+
+The zero is a result, not an absence of load: all 500 iterations ran and were
+answered in every run on both sides.
+
+### Verification performed
+
+| Gate | Result |
+|---|---|
+| Module 2.1 contract — 49 checks (auth, validation, max-6, unknown show/seat, foreign-screen seat, already-booked, duplicate seats, `booking_ref` uniqueness, mode guards, 501 stub, Phase 0/1 regression, no `password_hash` leakage, no schema drift) | **49/49 PASS** |
+| Module 2.1 race, by hand | **PASS** — reproduced at two concurrent clients |
+| Module 2.2 instrument checks | **PASS** — runs, targets the right endpoint, contends, does not serialise, guards refuse a taken/foreign seat and a dead server |
+| Module 2.3 baseline | **PASS** — 303 / 150 / 303, every figure traced back to the embedded raw k6 summaries |
+| Module 2.4 | **PASS** — `002` applies and is a no-op on re-run; unique index confirmed; `booking_ref` collision does not return 409 |
+| Module 2.5 verification | **PASS** — 0 / 0 / 0 |
+| §14 before-number reproduction, at close-out | **PASS** — 288 / 256 / 70 double-bookings on a fresh database at `001`, non-zero every run, unique-index absence asserted before and after |
+| Phase 0/1/2 integration review | **PASS** — no critical or high findings |
+
+**Not verified, and not claimed:** production or deployed behaviour, throughput,
+capacity ceilings, behaviour above 500 VUs or with a larger pool, hold or Redis
+behaviour, multi-instance correctness.
+
+### §14 reproduction, re-run at close-out
+
+The before-number is reproducible, which `PLAN.md` names as non-negotiable. On a
+disposable database at schema `001` (0 unique indexes on `(show_id, seat_id)`,
+asserted before and after), three runs of the identical workload produced
+**288, 256 and 70** double-bookings, 0 dropped, 0 5xx.
+
+Runs 1 and 2 sit inside the recorded 150–303 range; run 3's 70 falls below it.
+The reproduced range is wider and shifted lower. That is the stochastic variance
+this measurement was always reported as having — request latency was materially
+higher on the reproduction host state (avg 1005–1724 ms against 736–946 ms), and
+slower handling changes how attempts interleave. The gate asks whether the race
+reproduces non-zero with the load landing, not whether it lands on the same
+integer. It does, three times out of three.
+
+### Integration review — Phase 0 / 1 / 2
+
+Read-only, at `2c028b6` against `main` @ `12be6e7`. Fast-forwardable; `main`,
+`d184b54` and `9d03329` all remain ancestors; no history rewritten; branch not
+pushed.
+
+- **32 Phase 0/1 source and control files verified byte-identical to `main`** —
+  every Phase 1 route and service, both middleware, all of `db/` and `seed/`,
+  `001_init.sql`, `index.js`, and every control file including `render.yaml`,
+  `package*.json`, `PLAN.md`, `BACKLOG.md`, `CLAUDE.md` and `README.md`.
+- **`/` and `/health` frozen contract intact**; `render.yaml` `healthCheckPath`
+  unchanged.
+- **Error contract intact** — six `HttpError` throws, no ad-hoc error responses,
+  one new code (`SEATS_UNAVAILABLE`).
+- **Config boundary intact** — `config/env.js` reads exactly the seven variables
+  `.env.example` declares, and no `process.env` access exists anywhere else.
+- **`availabilityService` untouched and still the only seat-status read**;
+  `bookingService`'s only `booking_seats` statements are inserts. Phase 4.3's
+  Redis extension point is undisturbed.
+- **`seats` remains the authority** — the layout JSON is never consulted on the
+  booking path.
+- **Naive path byte-identical to `3aaf36b`** and still reachable; transaction
+  machinery exists only inside `createBookingSafe`.
+- **No forbidden construct is used.** `ON CONFLICT`, `FOR UPDATE` and
+  `WHERE NOT EXISTS` appear exactly three times in the repository — all inside
+  the comment that forbids them.
+- **No Phase 3+ leakage**; no `client/`; dependencies unchanged at six.
+- **Zero new dependencies**, zero manifest changes.
+- **Git hygiene** — seven commits, one author, no AI attribution, no tracked
+  secrets, clean tree.
+
+### Security incident — a live token in a result artifact
+
+The Module 2.3 pre-commit secret scan found **three valid HS256 bearer tokens**
+inside the result file. k6 embeds whatever `setup()` returned under
+`setup_data`, and `setup()` returns the auth token, so every recorded run
+carried a working seven-day credential for the demo user.
+
+Caught before staging. Nothing was committed and the branch has never been
+pushed, so no credential left the machine — verified by scanning every commit's
+diff and every reachable tree: **zero JWT-shaped strings**. No history rewrite
+and no secret rotation were required.
+
+Fixed at two levels: the artifact's three token values were replaced with a
+placeholder, with every metric, counter, duration, database count, derived
+result and timestamp byte-compared before and after to prove no measurement
+moved; and `handleSummary` now strips the token before writing (`2bcba13`), so
+future artifacts cannot contain one. The redaction is documented inside the
+artifact rather than applied silently.
+
+**Residual risk, open:** the fix guards the `SUMMARY_OUT` path only. k6's
+`--summary-export` flag bypasses `handleSummary` entirely and would still write
+a live token. The script cannot defend against it — the only in-script
+alternative changes the authentication behaviour under measurement. The
+mitigation is documentation. See the deferred findings below.
+
+### Deviations from the approved plan
+
+```
+Plan says: 2.2 declares no thresholds at all.
+Actual:    two always-true, non-aborting thresholds on tagged sub-metrics.
+Why:       declaring them is k6's documented way to surface a tagged
+           sub-metric in the summary, which keeps setup()'s two requests out
+           of the reported booking latency. Neither can abort a run.
+```
+
+```
+Plan says: k6's default expected statuses.
+Actual:    expected statuses set to 200, 201 and 409.
+Why:       a 409 is a correct response. Left at the default, http_req_failed
+           would read ~100% and could no longer answer the one question it is
+           there for — did the load land.
+```
+
+```
+Plan says: 2.3 and 2.5 record one run each.
+Actual:    three runs each, reported as a range with the run count stated.
+Why:       the before-number is stochastic (303, 150, 303). A single figure
+           from a stochastic process is a sample presented as a constant.
+           Approved before 2.3 ran.
+```
+
+```
+Plan says: §14 creates showrush_baseline and runs `npm run migrate` with 002
+           removed from the migrations directory.
+Actual:    001_init.sql applied directly via psql to a disposable database;
+           the migrations directory is never touched. The close-out
+           reproduction used showrush_repro so the 2.3 evidence database
+           survived.
+Why:       taking a measurement should never require moving a tracked file out
+           of the repository. loadtest/README.md is authoritative — see the
+           note in §14.
+```
+
+```
+Plan says: 2.1 modifies lib/validate.js to add seatIdList().
+Actual:    also added idValue() and MAX_SEATS_PER_BOOKING.
+Why:       show_id needs the same presence check, and seatIdList is built on
+           it. Same file, same purpose.
+```
+
+```
+Plan says: the safe path returns 501 until 2.4 (D3/Q2).
+Actual:    true through 2.1–2.3; 2.4 implemented it and no path returns 501.
+Why:       as sequenced. Recorded because §4's endpoint table still shows the
+           501, now marked superseded.
+```
+
+### Deferred findings
+
+Recorded, not silently fixed. None blocks the merge.
+
+**Medium**
+
+- `--summary-export` bypasses `handleSummary` and would write a live bearer
+  token into any file it produces. Only `SUMMARY_OUT` is protected. The fix is
+  a warning line in `loadtest/README.md` telling operators to use `SUMMARY_OUT`;
+  it was not added because it falls outside the authorised scope of the
+  corrective commit. **Open.**
+- **H1, carried from Phase 1** — `JWT_SECRET` is still not declared in
+  `render.yaml`, and the service has `blueprint_sync` history. Phase 2 does not
+  compound it: `BOOKING_MODE` is deliberately absent from `render.yaml` too
+  (decision D2) and defaults to `safe`, so a stripped variable cannot enable the
+  racy path in production. **Open.**
+
+**Low**
+
+- `recordIsolation()`'s memoisation is racy: the guard is read before it is set,
+  so under concurrent first bookings the isolation level is queried and logged
+  many times rather than once — 92 occurrences observed during 2.5, 31 during
+  the close-out reproduction. Log noise, not a correctness problem; the value is
+  identical every time. Fix by guarding with an in-flight promise.
+- `booking_seats_show_id_seat_id_idx` (Phase 1.2) is now redundant against the
+  constraint's own unique index. Deliberately not dropped — index changes are
+  Phase 7.3b and approval-gated. Stated in `002` itself.
+- No endpoint returns a user's bookings, so a booking can be created but only
+  read back through the seat map. Phase 5 needs `booking_ref` lookup anyway.
+- `show_prices` coverage is still unenforced at the schema level. Phase 2 fails
+  closed in application code (D6); the missing constraint remains deferred.
+- The peak-concurrent-backends observation recorded for 2.3 was not captured for
+  2.5. It was labelled an observation in both, and no claim depends on it.
+- Carried from Phase 1 and unchanged: `bookings.updated_at` has no trigger and
+  no writer until Phase 5; `isId` is still imported from `catalogService` rather
+  than a shared `lib/ids.js`; services do not guard a null `pool`; seeded day-0
+  shows can be in the past; no CORS until Phase 3.1; the `pg` `sslmode=require`
+  deprecation warning.
+
+**Resolved by this phase**
+
+- Phase 1 **R2** — `booking_seats.show_id` disagreeing with `bookings.show_id`
+  is now impossible on the safe path: both are written from one resolved value
+  inside one transaction.
+
+### Local state left behind
+
+The development database `showrush` is deliberately still at `001` only, so the
+naive baseline stays reproducible in place rather than solely via §14. A
+developer who runs `npm run migrate` will apply `002` — expected, not a defect.
+Disposable databases `showrush_25`, `showrush_baseline` and `showrush_repro`
+still exist and may be dropped at any time.
+
+### Known limitations carried forward
+
+No seat holds until Phase 4 · no payment, so bookings stay `pending` forever ·
+no booking read endpoints · no cancellation · no rate limiting on booking
+creation · no automated test suite · single instance, free tier · every number
+in this phase measured locally, never against the deployed service.
+
+### Git state
+
+| Ref | Commit |
+|---|---|
+| `feat/booking-core` (local only, not pushed) | `2c028b6` |
+| `main` / `origin/main` | `12be6e7` — untouched |
+| `feat/foundation` | `d184b54` — untouched |
+
+Working tree clean. All seven commits authored and committed by
+`vivek <vivekrole6110@gmail.com>`, matching every earlier commit in the
+repository. No AI attribution anywhere. `.env` untracked; no secrets in any
+tracked file on any ref.
+
+### Remaining close-out gates
+
+| # | Gate | Status |
+|---|---|---|
+| 1 | §14 before-number reproduction | **PASS** |
+| 2 | Phase 0/1/2 integration review | **PASS** |
+| 3 | `README.md` benchmark table | **NOT DONE** — separately authorized commit |
+| 4 | This close-out documentation | **PASS** |
+| 5 | `002` applied to Neon | **REQUIRES AUTHORIZATION** — Q7, stop-and-ask before any destructive step |
+| 6 | Render `BOOKING_MODE` verification | **NOT DONE** — read-only check that the variable is unset, so production runs `safe` |
+| 7 | Merge, deploy and production verification | **NOT DONE** — gated behind 3, 5 and 6 |
+
+### Handed to Phase 3
+
+A working, authenticated `POST /api/bookings` returning the seat list and price
+breakdown a booking summary needs; the `{error:{code,message}}` contract with
+`SEATS_UNAVAILABLE` for a lost seat; `availabilityService` still the single
+seat-status path, ready for Phase 4 to union Redis into; and a booking guarantee
+that lives in the database rather than in application code.
+
+**Frozen by this phase:** `UNIQUE (show_id, seat_id)` is the guarantee — the
+availability pre-check is UX and may be removed without affecting correctness;
+`BOOKING_MODE=naive` is permanent and must never be hardened, removed, or
+allowed to run in production.
