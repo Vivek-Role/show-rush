@@ -3,9 +3,10 @@
 Concurrent seat reservation system — the booking path for a cinema, built to be
 correct under contention rather than merely functional.
 
-**Status:** Phase 1 (Foundation) complete and deployed. Schema, authentication,
-seed data, and the read APIs are live. Booking itself arrives in Phase 2 — there
-is deliberately no way to book a seat yet.
+**Status:** Phase 2 (Booking correctness) complete on `feat/booking-core`, with
+measured before/after concurrency numbers below. Phase 1 — schema,
+authentication, seed data and the read APIs — is deployed. Seat holds arrive in
+Phase 4 and payment in Phase 5, so a booking is created and stays `pending`.
 
 ## Demo
 
@@ -62,7 +63,7 @@ network latency as well as container spin-up — the two are not separated here.
 
 - Node **v22.23.2** — `nvm use` reads `.nvmrc`
 - Docker (Docker Desktop with WSL integration, or a native daemon)
-- k6 — not needed yet; the load tests arrive in Phase 2 under `loadtest/`
+- k6 — needed only to re-run the load tests in [`loadtest/`](loadtest/)
 
 ## Local setup
 
@@ -85,6 +86,7 @@ is required; the server refuses to start without `JWT_SECRET`.
 | `REDIS_URL` | `redis://localhost:6380` |
 | `JWT_SECRET` | generate one, see below |
 | `JWT_EXPIRES_IN` | `7d` |
+| `BOOKING_MODE` | `safe` — `naive` only for the baseline measurement below |
 
 Ports are **5433** and **6380**, not the Postgres and Redis defaults — the
 defaults were already taken on the machine this was built on. `docker-compose.yml`
@@ -174,6 +176,21 @@ shape. Prices are integer paise, never floats.
 **The `seats` table is the authority on which seats exist**; the layout only
 describes how to draw them.
 
+### Booking
+
+| Method | Path | Body / auth | Success | Errors |
+|---|---|---|---|---|
+| `POST` | `/api/bookings` | `{show_id, seat_ids}` · `Authorization: Bearer <token>` | `201 {booking}` | `409 SEATS_UNAVAILABLE`, `404 NOT_FOUND`, `400 VALIDATION_ERROR`, `401 UNAUTHENTICATED` |
+
+Up to **6 seats** per booking, enforced server-side. All-or-nothing: if any seat
+is taken, the whole request is refused and nothing is written. The booking is
+returned as `{booking_ref, show_id, status, total_paise, seats}` with `status`
+always `"pending"` — Phase 5 owns payment.
+
+`409 SEATS_UNAVAILABLE` is the same code whether the seat was already gone when
+the request arrived or was lost in a race at commit time. A client should not
+have to know which layer caught it.
+
 ## Architecture notes
 
 - **Raw SQL over `pg`**, no ORM. Phase 2 needs precise control of the
@@ -182,23 +199,152 @@ describes how to draw them.
 - **`availabilityService` is the only code that answers "is this seat taken".**
   One query path. Phase 4 extends it with Redis holds rather than adding a
   second.
-- **`booking_seats` deliberately has no unique constraint** on
-  `(show_id, seat_id)`. Phase 2 needs the double-booking race to be
-  reproducible, and adds the constraint as its documented fix. This is not an
-  oversight.
+- **`UNIQUE (show_id, seat_id)` on `booking_seats` is the guarantee**, added by
+  `002_unique_booking_seats.sql`. The availability check in front of it is
+  convenience; the database is the only participant that sees every transaction,
+  so it is the only one that can decide.
+- **The racy path is kept on purpose.** `BOOKING_MODE=naive` is the
+  check-then-insert version the constraint replaced. It stays in the codebase
+  permanently, because without it the before-number above could never be
+  measured again. It refuses to start under `NODE_ENV=production`.
 
 ## Benchmarks
 
-**Not measured.** Numbers land here in Phase 2 (booking contention, before and
-after) and Phase 7, each with the command, environment, and workload used to
-produce it. Until then this section stays empty rather than aspirational.
+### Booking concurrency — 500 users, one seat
+
+500 virtual users try to book the **same seat on the same show at the same
+moment**. The question is how many of them walk away holding it.
+
+| | Before — `BOOKING_MODE=naive` | After — `BOOKING_MODE=safe` |
+|---|---|---|
+| **Seats sold twice** | **303 · 150 · 303** | **0 · 0 · 0** |
+| Bookings created (201) | 304 · 151 · 304 | 1 · 1 · 1 |
+| Correctly refused (409) | 196 · 349 · 196 | 499 · 499 · 499 |
+| Server errors (5xx) | 0 · 0 · 0 | 0 · 0 · 0 |
+| Other 4xx · no response | 0 · 0 | 0 · 0 |
+| Iterations run | 500 · 500 · 500 | 500 · 500 · 500 |
+| **Dropped iterations** | **0 · 0 · 0** | **0 · 0 · 0** |
+| `http_req_failed` | 0% · 0% · 0% | 0% · 0% · 0% |
+
+Three runs each side, re-seeded before every run. The before-number is a
+**range, not a point**: a race is stochastic, so reporting one figure would be
+presenting a sample as a constant. The after-number does not vary, and cannot —
+the constraint either holds or it does not.
+
+**The zero is a result, not an absence of load.** All 500 attempts ran and were
+answered in every run on both sides: zero dropped iterations, zero 5xx, zero
+unanswered requests. A run where the load never landed would also report zero
+double-bookings, which is why those rows are here.
+
+#### What changed between the two columns
+
+One migration:
+
+```sql
+alter table booking_seats
+  add constraint booking_seats_show_id_seat_id_key unique (show_id, seat_id);
+```
+
+That constraint is the guarantee. The availability check before it is a
+convenience — delete it and the system is still correct, just ruder. Delete the
+constraint and no amount of application code makes it safe, because under
+`READ COMMITTED` a plain `SELECT` takes no locks and neither transaction sees
+the other's uncommitted insert.
+
+A third run separates the two things that changed. `BOOKING_MODE=naive` against
+a database that **already has** the constraint: **0 double-bookings**, 1 created,
+195 refused, and **304 responses that were 5xx** — because the naive path never
+learned to catch `23505`. The database refused every duplicate on its own. The
+constraint prevents the double-booking; the transactional path is what turns the
+refusal into a clean 409 instead of a 500.
+
+#### Method
+
+| | |
+|---|---|
+| Script | [`loadtest/seat-contention.js`](loadtest/seat-contention.js), 500 VUs, `per-vu-iterations`, 1 iteration per VU, 3 s start barrier |
+| Counted by | [`loadtest/count-double-bookings.sql`](loadtest/count-double-bookings.sql) — `sum(claims − 1)` per `(show_id, seat_id)` over non-cancelled bookings |
+| Target | show 1, seat 3, `http://localhost:3000`, fresh seed before every run |
+| Database | local Docker **PostgreSQL 17.11** (`postgres:17-alpine`, port 5433) — never Neon, never the deployed service |
+| Isolation | **`read committed`**, asserted by the server at runtime, not assumed |
+| Connection pool | `pg` default **max 10** — the effective server-side concurrency ceiling, and part of what these numbers measure |
+| Machine | Ubuntu 26.04 on WSL2 / Windows 11, 4 cores, 5.8 GiB RAM, Node v22.23.2, k6 v2.2.0 |
+| Commit | `a372d09` · measured 2026-08-19 UTC |
+| Raw evidence | [`loadtest/results/`](loadtest/results/) — the full k6 summary behind every number |
+
+Both runs were taken with an unrelated local Postgres container stopped, so the
+two sides are comparable.
+
+#### Latency is reported, not claimed
+
+| p95 per run | Before | After |
+|---|---|---|
+| | 1090.4 · 911.9 · 994.6 ms | 1139.5 · 734.9 · 831.9 ms |
+
+**These are not a throughput or capacity result.** 500 virtual users against a
+pool of 10 connections measures queueing, and the before/after difference is not
+a performance improvement — the two paths do different amounts of work per
+request. Nothing here says how many bookings per second this system sustains.
+That question is Phase 7's.
+
+#### Reproducing it
+
+**After (safe)** — the current schema:
+
+```bash
+npm run migrate && npm run seed
+BOOKING_MODE=safe npm start
+
+k6 run loadtest/seat-contention.js
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush -f - < loadtest/count-double-bookings.sql
+```
+
+**Before (naive)** — needs a database **without** the constraint, so flipping
+one environment variable is not enough:
+
+```bash
+docker exec showrush-postgres psql -U showrush -d postgres \
+  -c "create database showrush_baseline"
+
+# schema 001 only, applied directly — the fix is deliberately absent
+docker exec -i showrush-postgres psql -U showrush -d showrush_baseline \
+  < server/migrations/001_init.sql
+
+export DATABASE_URL="postgres://showrush:showrush@localhost:5433/showrush_baseline"
+npm run seed
+BOOKING_MODE=naive npm start
+
+k6 run loadtest/seat-contention.js
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush_baseline -f - < loadtest/count-double-bookings.sql
+```
+
+The counting SQL prints the `booking_seats` indexes last, so every run carries
+proof of which schema produced it. `BOOKING_MODE=naive` refuses to start with
+`NODE_ENV=production` — the racy path exists permanently so this measurement
+stays reproducible, never to serve anyone.
+
+Full method, deviations, and the variance discussion:
+[`docs/phases/phase-2-booking-core.md`](docs/phases/phase-2-booking-core.md) and
+[`loadtest/README.md`](loadtest/README.md).
+
+### Everything else
+
+**Not measured.** Hold throughput, availability-query latency and WebSocket
+behaviour arrive in Phase 7, each with the command, environment and workload
+used to produce it.
 
 The cold-start figure above is a deployment characteristic, not a performance
 benchmark of the system.
 
 ## Known limitations
 
-- No booking endpoint yet — Phase 2.
+- No seat holds yet — Phase 4. A seat is free until someone books it.
+- No payment, so every booking stays `pending` forever — Phase 5.
+- No endpoint returns a user's bookings; a booking is visible only through the
+  seat map.
+- No cancellation, and no rate limiting on booking creation.
 - No refresh tokens; a 7-day access token is the whole session model.
 - No password reset, email verification, or roles.
 - No rate limiting on the auth endpoints.

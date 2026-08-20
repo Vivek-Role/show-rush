@@ -1,0 +1,212 @@
+# loadtest
+
+The evidence behind Phase 2's before/after numbers. A metric without a
+reproducible script is a claim, so the script lives here, in the repository,
+next to the SQL that counts what it produced.
+
+| File | What it is |
+|---|---|
+| `seat-contention.js` | k6 script — N virtual users book the **same seat** on the **same show** at the same moment |
+| `count-double-bookings.sql` | the measurement — how many seats ended up sold twice |
+| `results/` | raw k6 summaries behind each recorded number (created by Module 2.3) |
+
+The script produces requests. It never reports a double-booking count — that
+comes from the database afterwards, via the SQL.
+
+---
+
+## Never against Neon or Render
+
+Both numbers are measured **locally**, against the `docker compose` Postgres.
+
+- A naive run against production would write real double-bookings into the
+  live database.
+- A run against a free tier measures that tier's throttling, not this system.
+
+`seat-contention.js` defaults to `http://localhost:3000` and has no production
+default. Keep it that way.
+
+---
+
+## Prerequisites
+
+- k6 — `k6 version` (built and verified against **v2.2.0**)
+- The local stack up: `docker compose up -d` (Postgres **5433**, Redis **6380**)
+- A migrated and freshly seeded database
+- The server running locally in the mode being measured
+
+**Run everything in one environment.** On this machine the repository, Node and
+k6 all live inside WSL while Docker publishes to Windows `localhost`. A run
+split across the two measures a network path rather than the booking code.
+`k6` is at `~/.local/bin/k6`, which is on the `PATH` of a login shell.
+
+---
+
+## Running it
+
+```bash
+# terminal 1 — the server, in the mode you are measuring
+BOOKING_MODE=naive npm start
+
+# terminal 2 — the load
+k6 run loadtest/seat-contention.js
+
+# terminal 2 — the measurement
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush -f - < loadtest/count-double-bookings.sql
+```
+
+### Options
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BASE_URL` | `http://localhost:3000` | never a deployed URL |
+| `SHOW_ID` | `1` | |
+| `SEAT_ID` | first available seat on the show | deterministic on a freshly seeded database, so two runs are comparable without remembering an id |
+| `VUS` | `500` | `PLAN.md` 2.2's workload |
+| `BARRIER_MS` | `3000` | how long every VU waits before firing, so the attempts land together |
+| `EMAIL` / `PASSWORD` | the demo account | |
+| `SUMMARY_OUT` | unset | path for the raw JSON summary. Unset means nothing is written, so a rehearsal cannot overwrite a recorded run |
+
+`setup()` refuses to start if the target seat is already taken — a run against a
+booked seat would measure nothing and silently report zero.
+
+---
+
+## Reading the output
+
+```
+  iterations           500      how many attempts k6 actually ran
+  dropped_iterations   0        attempts it could not run — must be read first
+  201 created          N        bookings that succeeded
+  409 conflict         N        attempts correctly refused
+  5xx / no response    N        the load failing rather than the system refusing
+  http_req_failed      0.00%    anything other than 201 or 409
+```
+
+**Read `dropped_iterations` and `http_req_failed` before the headline number.**
+"0 double-bookings" means nothing if the load never landed — a run where every
+request was refused at the socket also produces zero.
+
+k6 only creates the `dropped_iterations` metric when it actually drops one, so
+an absent metric is a measured zero, not a missing measurement. The summary
+prints `0` in both cases.
+
+Running against `BOOKING_MODE=safe` before Module 2.4 lands is unmistakable:
+every attempt is a 501, so the run reports `5xx` equal to the VU count and
+`http_req_failed 100.00%`. That is not a result — it is the wrong server.
+
+`201 created` and the rest are k6's own counters, one per attempt. They are the
+authoritative per-attempt figures; `http_reqs` is higher because `setup()` also
+logs in and fetches the seat map.
+
+A 409 is a **correct** response, so the script's expected statuses are 201 and
+409. `http_req_failed` therefore means "the request did not land or the server
+broke", which is the question that metric is here to answer.
+
+---
+
+## Why the barrier and the connection settings matter
+
+Module 2.1 found that a client which quietly reuses sockets **serialises the
+attempts and hides the race entirely** — eight concurrent Node `fetch` requests
+for one free seat produced one success and seven conflicts, which reads exactly
+like a system that is already correct. The same eight requests over separate
+sockets double-booked every time.
+
+So the script sets `noConnectionReuse: true` and holds every VU at a barrier
+until a common start time. Both exist to make sure a zero result means the
+system refused the work, not that the workload never overlapped.
+
+If a future run reports suspiciously few conflicts, check these two first.
+
+## The result varies between runs — record a range, not one number
+
+A race is stochastic, and this one is. Verified at 500 VUs against a freshly
+seeded database, three consecutive runs produced **213, 394 and 255**
+double-bookings; at 50 VUs, **49, 4 and 26**. Every run produced some, none
+dropped an iteration, and none returned a 5xx.
+
+Two consequences for any recorded measurement:
+
+- **Re-seed before every run.** `booking_seats` grows as runs accumulate, which
+  slows the availability query and widens the race window, so successive runs
+  against the same database are not comparable with each other.
+- **Report several runs and their range**, with the run count stated. A single
+  figure from a stochastic process is a sample presented as a constant.
+
+The "after" number is not stochastic in the same way: the constraint either
+holds or it does not, so 0 is 0.
+
+---
+
+## Reproducing the before/after numbers
+
+The two numbers are **not** both reachable by flipping one environment
+variable. Once Module 2.4 adds `UNIQUE (show_id, seat_id)`, the naive path can
+no longer double-book: the database refuses it. The "before" number needs a
+database without that constraint **as well as** `BOOKING_MODE=naive`.
+
+### After (safe) — the current database
+
+```bash
+npm run migrate                        # 001 and 002 applied
+npm run seed
+BOOKING_MODE=safe npm start
+k6 run loadtest/seat-contention.js
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush -f - < loadtest/count-double-bookings.sql
+```
+
+### Before (naive) — a disposable database at the pre-fix schema
+
+```bash
+docker exec showrush-postgres psql -U showrush -d postgres \
+  -c "create database showrush_baseline"
+
+# 001 only, applied directly: the fix is deliberately not present
+docker exec -i showrush-postgres psql -U showrush -d showrush_baseline \
+  < server/migrations/001_init.sql
+
+export DATABASE_URL="postgres://showrush:showrush@localhost:5433/showrush_baseline"
+npm run seed
+BOOKING_MODE=naive npm start
+
+k6 run loadtest/seat-contention.js
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush_baseline -f - < loadtest/count-double-bookings.sql
+```
+
+`schema_migrations` stays empty in that database on purpose — it is disposable,
+recreated for the measurement and dropped afterwards. `count-double-bookings.sql`
+prints the `booking_seats` indexes at the end precisely so every recorded run
+carries proof of which schema it ran against.
+
+Drop it when finished:
+
+```bash
+docker exec showrush-postgres psql -U showrush -d postgres \
+  -c "drop database showrush_baseline"
+```
+
+**`BOOKING_MODE=naive` refuses to start with `NODE_ENV=production`.** The racy
+path exists permanently so this measurement stays reproducible, never to serve
+real users.
+
+---
+
+## Recording a run
+
+Every number written down carries its method, or it is not a measurement:
+
+machine and OS · Node, Postgres and k6 versions · commit SHA · date · `VUS` ·
+`BARRIER_MS` · show and seat · `BOOKING_MODE` · the transaction isolation the
+server logged at first booking · the `pg` pool size · whether the unrelated
+`collab-postgres` container was running.
+
+Save the raw summary alongside it:
+
+```bash
+SUMMARY_OUT=loadtest/results/2.3-naive-2026-08-20.json \
+  k6 run loadtest/seat-contention.js
+```
