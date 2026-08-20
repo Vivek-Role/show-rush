@@ -1137,3 +1137,123 @@ loading the app in a real browser did.
 
 `feat/seat-map`, created from `main` @ `692ffcf`. `main` untouched and still in
 sync with `origin/main`. Nothing committed, nothing pushed, nothing merged.
+
+---
+
+## 23. Module 3.2 — Seat grid · implementation plan (approved)
+
+**Approved:** 2026-08-20, with rulings recorded in §23.2.
+
+### 23.1 Goal
+
+Render the seat map for a show from `GET /api/shows/:id/seatmap` — rows in
+layout order, aisles as gaps, tiers colour-coded, a legend, booked seats
+visibly unavailable. Rendering only; no selection state.
+
+### 23.2 Rulings taken before implementation
+
+- **`client/src/App.jsx` in scope** — it is the only router, and Module 3.1's
+  ruling (b) deferred the `/shows/:id` route here.
+- **`client/src/pages/ShowsPage.jsx` in scope** — shows become links.
+- **`client/src/money.js` NOT moved forward.** The module boundary in §6 stands:
+  `money.js` remains Module 3.3's. The legend formats paise locally instead.
+- **Append-only phase-doc changes approved** (§23, §24).
+
+### 23.3 Approved file scope — 9 files
+
+| File | Action |
+|---|---|
+| `client/src/seatmap/seatIndex.js` | new — pure, no React |
+| `client/src/seatmap/SeatMap.jsx` | new |
+| `client/src/seatmap/SeatButton.jsx` | new |
+| `client/src/seatmap/Legend.jsx` | new |
+| `client/src/seatmap/seatmap.css` | new |
+| `client/src/pages/SeatMapPage.jsx` | new |
+| `client/src/App.jsx` | modify — import + `/shows/:id` route |
+| `client/src/pages/ShowsPage.jsx` | modify — shows become links |
+| `docs/phases/phase-3-seat-map.md` | modify — append §23, §24 |
+
+No dependencies. No server changes.
+
+### 23.4 Design rules
+
+- **`seats` decides what exists; `layout` decides where it goes.** A layout cell
+  with no matching seat renders as a gap.
+- **`data-seat-id` carries the API id.** Never an index, never `row+number` as
+  identity.
+- **`status` is an open string.** `isSelectable()` returns true only for
+  `'available'`; `booked`, `held` and anything unrecognised render disabled.
+- **No selection state, no click handler** — Module 3.3 supplies both as props.
+- **No render optimisation.** No `React.memo`, no `useCallback` on seats, no
+  virtualisation: Module 3.5 must measure the straightforward DOM version, or
+  the canvas comparison in `BACKLOG.md` P1 is against a strawman. `useMemo`
+  guards only the seat index, which is structural.
+- **The map scrolls inside itself**; the page body never scrolls sideways.
+
+---
+
+## 24. Module 3.2 — close-out
+
+**Status:** IMPLEMENTED and VERIFIED. Not committed at time of writing.
+**Branch:** `feat/seat-map`, on top of `f51e75f`.
+**Written:** 2026-08-20
+
+### 24.1 What was implemented
+
+The nine approved files, and nothing else. Six new (`seatIndex.js`,
+`SeatMap.jsx`, `SeatButton.jsx`, `Legend.jsx`, `seatmap.css`,
+`SeatMapPage.jsx`), two modified (`App.jsx`, `ShowsPage.jsx`), plus this
+document.
+
+`SeatMapPage` makes exactly one request — `GET /api/shows/:id/seatmap` — using
+the existing `request()` helper. No server file, no `api/client.js` change, and
+no new dependency.
+
+### 24.2 Verification results
+
+Local: WSL2 Ubuntu, Node v22.23.2, local Docker Postgres 17 + Redis, API on
+:3000, **production build** served by `vite preview` on :4173, Chrome driven by
+`javascript_tool`.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | Client production build | **PASS** — 34 modules, JS 236.90 kB (75.64 kB gzip), CSS 1.81 kB |
+| 2 | `/shows/1` renders | **PASS** — 160 seats, 10 rows `A`–`J`, 16 per row |
+| 3 | Aisles | **PASS** — 2 spacers per row, matching `aislesAfterColumn: [4,12]` |
+| 4 | Booked seats | **PASS** — exactly `A1,A2,C5,C6,C7,I3,I4` disabled |
+| 5 | Selectable count | **PASS** — 153 enabled |
+| 6 | Legend | **PASS** — silver ₹200 · gold ₹320 · platinum ₹450 · unavailable |
+| 7 | Unknown status (`held` injected into the payload) | **PASS** — renders `data-status="held"`, disabled, no crash |
+| 8 | Seat absent from `seats[]` | **PASS** — 159 seats + exactly 1 `.seat--absent` gap |
+| 9 | Seat identity | **PASS** — 160 unique `data-seat-id`, every one an API id (re-confirmed on screen 3) |
+| 10 | No selection state | **PASS** — no `useState`/`useReducer`/`onClick` anywhere in `client/src/seatmap/` |
+| 11 | Deep links | **PASS** — `/shows/1` → 200 and renders; `/shows/999999` → "Show not found", 0 seats, no crash |
+| 12 | Second geometry (screen 3, IMAX) | **PASS** — 260 seats, 13 rows `A`–`M`, 20 per row, aisles at 5 and 15 |
+| — | Page does not scroll sideways | **PASS** — `body.scrollWidth === body.clientWidth` on both screens |
+| — | 3.1 → 3.2 integration | **PASS** — a show link on `/movies/1` navigates to `/shows/1` and renders 160 seats |
+
+Checks 7 and 8 patched the **fetched payload in the browser only** — never the
+source, never the database.
+
+**NOT RUN:** Phase 2's contention suite — no server code changed.
+**NOT MEASURED:** any performance figure. Module 3.5 owns measurement; nothing
+in this module is a benchmark.
+
+### 24.3 Deviations from the approved plan
+
+1. **`seatIndex.js` returns `{ seatAt, tierPrices }`, not `{ …, counts }`.**
+   `counts` was in the plan's signature but nothing consumed it, and shipping an
+   unused field is dead code. Recorded rather than silently dropped.
+2. **Price formatting lives inside `Legend.jsx`** as a local `rupees()`, per the
+   ruling that `money.js` stays in Module 3.3. Module 3.3 extracts it; the
+   comment in the file says so.
+
+### 24.4 Notes carried to later modules
+
+- `SeatButton` takes only `seat`. Module 3.3 adds `isSelected` and `onToggle`
+  props; no other change to the render layer should be needed — that is the
+  seam being tested.
+- `isSelectable()` is the single place that decides selectability. Phase 4.3's
+  `held` status already flows through it correctly, verified in check 7.
+- The tier colour table in `seatmap.css` is keyed by `data-tier`. An unknown
+  tier falls back to neutral rather than vanishing.

@@ -2,6 +2,7 @@ import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './auth/AuthContext.jsx';
 import { LoginPage } from './pages/LoginPage.jsx';
 import { MoviesPage } from './pages/MoviesPage.jsx';
+import { SeatMapPage } from './pages/SeatMapPage.jsx';
 import { ShowsPage } from './pages/ShowsPage.jsx';
 
 export function App() {
@@ -30,8 +31,8 @@ export function App() {
         <Routes>
           <Route path="/" element={<MoviesPage />} />
           <Route path="/movies/:id" element={<ShowsPage />} />
+          <Route path="/shows/:id" element={<SeatMapPage />} />
           <Route path="/login" element={<LoginPage />} />
-          {/* /shows/:id arrives with the seat map in Module 3.2. */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

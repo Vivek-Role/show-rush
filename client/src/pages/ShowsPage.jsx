@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { request } from '../api/client.js';
 
 // Times come back as timestamptz and are rendered in the viewer's own zone,
@@ -51,9 +51,10 @@ export function ShowsPage() {
       <h2>Shows</h2>
       <ul>
         {data.shows.map((show) => (
-          // Not yet a link: the seat map and its /shows/:id route are Module 3.2.
           <li key={show.id}>
-            {TIME_FORMAT.format(new Date(show.starts_at))} · {show.screen.name}
+            <Link to={`/shows/${show.id}`}>
+              {TIME_FORMAT.format(new Date(show.starts_at))} · {show.screen.name}
+            </Link>
           </li>
         ))}
       </ul>
