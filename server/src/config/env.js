@@ -16,6 +16,9 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? '',
   jwtSecret: process.env.JWT_SECRET ?? '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  // The exact origin the browser client is served from. Empty means no browser
+  // client is allowed through CORS at all, which is the safe default.
+  clientOrigin: process.env.CLIENT_ORIGIN ?? '',
   // Defaults to 'safe' so that an unset variable can never deploy the racy
   // booking path. Enabling 'naive' is always a deliberate act.
   bookingMode: (process.env.BOOKING_MODE ?? 'safe').trim().toLowerCase(),

@@ -8,12 +8,16 @@
     "node": "22.23.2"
   },
   "workspaces": [
-    "server"
+    "server",
+    "client"
   ],
   "scripts": {
     "dev": "npm run dev --workspace server",
     "start": "npm run start --workspace server",
     "migrate": "npm run migrate --workspace server",
-    "seed": "npm run seed --workspace server"
+    "seed": "npm run seed --workspace server",
+    "dev:client": "npm run dev --workspace client",
+    "build:client": "npm run build --workspace client",
+    "preview:client": "npm run preview --workspace client"
   }
 }

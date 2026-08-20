@@ -7,6 +7,13 @@ for (const name of missingConnectionVars()) {
   console.error(`${name} is not set`);
 }
 
+// Reported, not fatal — the same treatment the connection strings get. The API
+// stays fully usable by curl, k6 and any non-browser client; only cross-origin
+// browser requests are refused.
+if (!config.clientOrigin) {
+  console.error('CLIENT_ORIGIN is not set — browser clients will be blocked by CORS');
+}
+
 connectRedis();
 
 const app = createApp();

@@ -1,10 +1,14 @@
 import { Router } from 'express';
+import { clearAuthCookie, setAuthCookie } from '../lib/auth-cookie.js';
 import { email, newPassword, personName, presentString } from '../lib/validate.js';
 import { requireAuth } from '../middleware/auth.js';
 import { authenticate, issueToken, registerUser } from '../services/authService.js';
 
 export const authRouter = Router();
 
+// Both of these now set a cookie as well as returning the token. The JSON body
+// is unchanged: API clients keep using the token, browsers use the cookie and
+// ignore the token entirely, and neither transport knows about the other.
 authRouter.post('/register', async (req, res) => {
   const body = req.body ?? {};
 
@@ -14,7 +18,10 @@ authRouter.post('/register', async (req, res) => {
     name: personName(body.name),
   });
 
-  res.status(201).json({ user, token: issueToken(user) });
+  const token = issueToken(user);
+  setAuthCookie(res, token);
+
+  res.status(201).json({ user, token });
 });
 
 authRouter.post('/login', async (req, res) => {
@@ -25,7 +32,18 @@ authRouter.post('/login', async (req, res) => {
     password: presentString(body.password, 'password'),
   });
 
-  res.json({ user, token: issueToken(user) });
+  const token = issueToken(user);
+  setAuthCookie(res, token);
+
+  res.json({ user, token });
+});
+
+// Deliberately unauthenticated: clearing a session that has already expired is
+// a success, not a 401. Only the server can clear an httpOnly cookie, which is
+// why this endpoint has to exist at all.
+authRouter.post('/logout', (req, res) => {
+  clearAuthCookie(res);
+  res.status(204).end();
 });
 
 authRouter.get('/me', requireAuth, (req, res) => {

@@ -1,4 +1,7 @@
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
 import express from 'express';
+import { config } from './config/env.js';
 import { authRouter } from './routes/auth.js';
 import { bookingsRouter } from './routes/bookings.js';
 import { healthRouter } from './routes/health.js';
@@ -11,7 +14,22 @@ import { errorHandler, notFound } from './middleware/error.js';
 export function createApp() {
   const app = express();
 
+  // One exact origin, never a wildcard — a wildcard is incompatible with
+  // credentialed requests anyway, and the browser client sends its cookie on
+  // every call. An unset CLIENT_ORIGIN sends no allow-origin header at all, so
+  // browsers fail closed; curl and k6 are unaffected, because CORS is a rule
+  // browsers apply to themselves.
+  app.use(
+    cors({
+      origin: config.clientOrigin,
+      credentials: true,
+      methods: ['GET', 'POST', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    }),
+  );
+
   app.use(express.json({ limit: '100kb' }));
+  app.use(cookieParser());
 
   app.use(healthRouter);
   app.use('/api/auth', authRouter);
