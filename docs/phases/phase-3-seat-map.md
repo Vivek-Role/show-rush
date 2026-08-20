@@ -1257,3 +1257,201 @@ in this module is a benchmark.
   `held` status already flows through it correctly, verified in check 7.
 - The tier colour table in `seatmap.css` is keyed by `data-tier`. An unknown
   tier falls back to neutral rather than vanishing.
+
+---
+
+## 25. Module 3.3 — `useSeatSelection` · implementation plan (proposed)
+
+**Status:** PROPOSED — not approved, not implemented.
+**Branch:** `feat/seat-map`, on top of `1d5d712`.
+**Written:** 2026-08-20
+
+### 25.1 Objective
+
+Put every piece of seat-selection state in one hook with no rendering in it, and
+wire the existing render layer to it through props. The split is the deliverable:
+`BACKLOG.md` P1's canvas renderer must be able to replace the drawing code
+without touching selection logic.
+
+### 25.2 User-visible outcome
+
+On a show page a visitor can click an available seat to select it (highlighted),
+click again to deselect, select up to **6**, and see a running count and total
+that updates immediately. A 7th click is refused with a short message rather
+than silently swapping a seat out. Booked seats remain unclickable. A "clear"
+control empties the selection.
+
+No booking happens — the proceed button and the price-breakdown panel are
+Module 3.4.
+
+### 25.3 Proposed file scope — 8 files
+
+**New (2)**
+
+| File | Responsibility |
+|---|---|
+| `client/src/seatmap/useSeatSelection.js` | All selection state and derivation. No JSX, no DOM, no fetch. |
+| `client/src/money.js` | One function: integer paise to display string. |
+
+**Modified (5)**
+
+| File | Change |
+|---|---|
+| `client/src/pages/SeatMapPage.jsx` | Own the hook; pass `isSelected`/`onToggle` down; render the count/total line and clear control |
+| `client/src/seatmap/SeatMap.jsx` | Accept `isSelected` / `onToggle` / `limitReached`, forward per seat |
+| `client/src/seatmap/SeatButton.jsx` | Accept `selected` / `onToggle` / `limitReached`; add the click handler, `aria-pressed`, `data-selected` |
+| `client/src/seatmap/seatmap.css` | Selected-seat styling; limit-reached affordance |
+| `client/src/seatmap/Legend.jsx` | Replace the local `rupees()` with `money.js`, per §24.3 deviation 2 |
+
+**Documentation (1):** `docs/phases/phase-3-seat-map.md` — this section, and §26
+at close-out.
+
+**Deviation from §6's 3.3 file table — three files it does not list.**
+`SeatButton.jsx` and `seatmap.css` are unavoidable: a selection that cannot be
+clicked or seen is not a selection, and §6 gave `SeatButton` no props beyond
+`seat`. `Legend.jsx` changes only to consume `money.js`, so two formatters
+cannot drift. Flagged rather than absorbed silently.
+
+### 25.4 Interaction and state model
+
+```
+useSeatSelection({ seats, maxSeats = 6 })
+  -> { selectedIds, isSelected(id), toggle(id), clear(),
+       count, totalPaise, breakdown, limitReached }
+```
+
+- **State is one `Set` of seat ids (strings).** Never an index, never
+  `row_label + seat_number` — those are presentation.
+- **`toggle(id)`** resolves the id against the current seats and refuses, as a
+  no-op, when: the seat is unknown, `isSelectable(status)` is false, or the seat
+  is not already selected and `count === maxSeats`. **The 7th seat is refused;
+  the oldest is never silently dropped.**
+- **Pruning is derivation, not an effect.** Each render filters the stored set
+  against the current `seats`, so an id that vanished or turned unavailable in a
+  refetch stops counting immediately. The hook therefore contains **no
+  `useEffect`** — no extra render pass, no flash of a stale total.
+- **`limitReached`** is `count >= maxSeats`.
+- **`clear()`** empties the set.
+
+`MAX_SEATS_PER_BOOKING = 6` already exists and is enforced in
+`server/src/lib/validate.js`. The client repeats it as UX only. The server
+remains the enforcer — a limit only the browser applies is not a limit.
+
+### 25.5 Data contracts consumed
+
+No new endpoint, and **no request at all**. The hook consumes the `seats` array
+already fetched by `SeatMapPage` from `GET /api/shows/:id/seatmap`:
+
+`{ id, row_label, seat_number, tier, price_paise, status }`
+
+`id` is a string, `price_paise` an integer, `status` an open string handled
+through the existing `isSelectable()` in `seatIndex.js` — unchanged, so Phase
+4.3's `held` keeps falling through as unselectable.
+
+### 25.6 Authentication implications
+
+**None.** Selection is entirely client-side: no API call, no token, no cookie,
+no `requireAuth`. Selection is explicitly **not** gated behind login — an
+anonymous visitor may browse and select. The login gate arrives in Module 3.4 at
+the proceed step, exactly where `POST /api/bookings` requires it. Nothing here
+touches `AuthContext`, `api/client.js`, or any server file.
+
+### 25.7 Pricing and money
+
+- `totalPaise` is an **integer sum** of `price_paise`. No floats, no rounding,
+  no division anywhere in the hook.
+- `breakdown` is `[{ tier, count, unitPaise, subtotalPaise }]`, grouped by tier
+  in the order tiers first appear in `seats` — the API returns seats ordered by
+  row then number, so that order is deterministic.
+- **The single division happens in `money.js`**, at the moment a string is
+  rendered. That is the whole reason the file exists.
+- A `null` `price_paise` (possible via the `show_prices` LEFT JOIN) contributes
+  **0** to the total and renders as an em dash per seat. Defensive only: the
+  seed prices every tier its screen offers, and Phase 2 fails closed on a
+  missing price. Recorded so the behaviour is a decision, not an accident.
+
+### 25.8 Error, loading and empty states
+
+- Loading and error handling in `SeatMapPage` are **unchanged** — 3.2 already
+  covers the fetch, the 404 and the network failure.
+- **Empty selection** renders "No seats selected", not blank space and not a
+  zero total.
+- **Limit reached** renders a short line, shown only once the ceiling is hit.
+- **A sold-out show** needs no special case: every seat is disabled and the
+  selection stays empty.
+- **Seats pruned by a refetch** simply stop counting. Telling the user *which*
+  seat they lost is conflict UX — Module 3.4's 409 path and `BACKLOG.md` P3.
+
+### 25.9 Accessibility
+
+- Seats stay native `<button>` elements: focusable, Enter/Space activated, no
+  custom key handling.
+- A selected seat carries **`aria-pressed`**, the correct semantics for a toggle
+  button, alongside `data-selected` for styling.
+- `aria-label` states seat, tier, status and selected state.
+- When the limit is reached, unselected available seats get **`aria-disabled`
+  rather than `disabled`** — they stay in the tab order and keep explaining
+  themselves instead of vanishing from keyboard navigation.
+- The count/total line is an **`aria-live="polite"`** region, so selecting a
+  seat is announced rather than silently changing.
+- Colour is never the only signal: selection is carried by `aria-pressed` and a
+  border, not hue alone.
+- Out of scope: canvas accessibility and a parallel keyboard navigation model
+  (`BACKLOG.md` P3).
+
+### 25.10 Verification
+
+Production build served by `vite preview`, API on :3000, Chrome driven by
+`javascript_tool`, clicking the real buttons so React's own handlers run.
+
+| # | Check | Expected |
+|---|---|---|
+| 1 | `npm run build:client` | succeeds |
+| 2 | Hook purity | no JSX, `document`, `window`, `fetch` or `useEffect` in `useSeatSelection.js` |
+| 3 | Select | click A3 gives `aria-pressed="true"`, `data-selected="true"`, count 1 |
+| 4 | Deselect | click A3 again gives count 0 |
+| 5 | Booked seat | A1 stays `disabled`, never selectable |
+| 6 | Ceiling | clicking 7 available seats leaves count at **6**, the 7th unselected, message shown |
+| 7 | Oldest not dropped | the first of those 6 is still selected after the 7th click |
+| 8 | Total | 3 silver + 1 gold = 92000 paise, displayed as the correct rupee string |
+| 9 | Breakdown | groups by tier with correct counts and subtotals |
+| 10 | Identity | selected `data-seat-id` values match the API ids exactly |
+| 11 | Prune | patch the payload so a selected seat returns `booked`; it drops out and the total falls |
+| 12 | Clear | clear control gives count 0 and no `aria-pressed="true"` remains |
+| 13 | `money.js` | 20000, 32000, 45000 format correctly; null gives an em dash |
+| 14 | Legend | still renders the same prices after migrating to `money.js` |
+| 15 | Accessibility | live region present; disabled seats not focusable; at the limit, unselected seats are `aria-disabled` yet still focusable |
+
+**Not run:** Phase 2's contention suite — no server change. **Not measured:**
+any performance number. Module 3.5 owns measurement, and no memoisation is added
+here for the reason recorded in §23.4.
+
+### 25.11 Done-when
+
+- `useSeatSelection.js` exists with the §25.4 signature and contains no
+  rendering, no DOM access and no effects
+- select, deselect, the 6-seat ceiling and the running total all work in a real
+  browser
+- selection is keyed by API seat id, and ids that vanish or become unavailable
+  stop counting
+- `totalPaise` is an integer; the only division lives in `money.js`
+- `Legend` and the running total use the same formatter
+- checks 1 to 15 pass
+
+### 25.12 Dependencies
+
+**None.** No new package, no server change, no schema change, no new endpoint.
+
+### 25.13 Explicitly out of scope
+
+| Excluded | Owner |
+|---|---|
+| `POST /api/bookings`, proceed button, booking result, 409 conflict UX | Module 3.4 |
+| The summary panel itself — seat list and price-breakdown display | Module 3.4 |
+| `npm run seed:stress`, the 5,000-seat layout, any measurement | Module 3.5 |
+| Holds, TTL, countdown, `held` produced by the server | Phase 4 |
+| WebSocket updates, rAF batching, optimistic selection | Phase 6 |
+| Canvas renderer, quadtree, virtualisation, `React.memo`, `useCallback` on seats | `BACKLOG.md` P1 — 3.5 must measure the plain DOM version |
+| Seat recommendation, group-seating rules | `BACKLOG.md` P2/P3 |
+| Any server, migration, `loadtest/` or control-file change | not this module |
+| A test framework | Q7 — not without separate approval |

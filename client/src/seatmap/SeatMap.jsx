@@ -11,7 +11,7 @@ import './seatmap.css';
 // aisles fall. The seats table decides which of those cells is a real seat. A
 // cell with no seat is drawn as a gap, because seats is authoritative for seat
 // identity and the layout is only a picture of it.
-export function SeatMap({ layout, seatAt }) {
+export function SeatMap({ layout, seatAt, isSelected, onToggle, limitReached = false }) {
   const aislesAfter = new Set(layout.aislesAfterColumn ?? []);
 
   return (
@@ -31,7 +31,12 @@ export function SeatMap({ layout, seatAt }) {
                 // seat does. The seat's own id identifies the seat itself.
                 <Fragment key={seatKey(row.label, seatNumber)}>
                   {seat ? (
-                    <SeatButton seat={seat} />
+                    <SeatButton
+                      seat={seat}
+                      selected={isSelected ? isSelected(seat.id) : false}
+                      limitReached={limitReached}
+                      onToggle={onToggle}
+                    />
                   ) : (
                     <span className="seat seat--absent" aria-hidden="true" />
                   )}

@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { request } from '../api/client.js';
+import { formatPaise } from '../money.js';
 import { Legend } from '../seatmap/Legend.jsx';
 import { SeatMap } from '../seatmap/SeatMap.jsx';
 import { buildSeatIndex } from '../seatmap/seatIndex.js';
+import { useSeatSelection } from '../seatmap/useSeatSelection.js';
+
+// The server enforces this in validate.js; the client repeats it so the sixth
+// seat is the last one that highlights rather than the first 400.
+const MAX_SEATS = 6;
+
+// Stable identity for the empty case, so the selection hook is not handed a new
+// array on every render while the payload is still loading.
+const NO_SEATS = [];
 
 // Field by field rather than dateStyle/timeStyle: ECMA-402 rejects combining
 // those shorthands with timeZoneName, and the constructor throws at module
@@ -46,7 +56,11 @@ export function SeatMapPage() {
   // Rebuilt only when a new payload arrives, not on every render. This is the
   // index, not a rendering optimisation: Module 3.5 measures the straightforward
   // DOM implementation, so no seat memoisation is introduced here.
-  const index = useMemo(() => buildSeatIndex(data?.seats ?? []), [data]);
+  const index = useMemo(() => buildSeatIndex(data?.seats ?? NO_SEATS), [data]);
+
+  // All selection state lives in the hook. This page owns it and passes it
+  // down; nothing below holds a selection of its own.
+  const selection = useSeatSelection({ seats: data?.seats ?? NO_SEATS, maxSeats: MAX_SEATS });
 
   if (error) return <p>{error}</p>;
   if (!data) return <p>Loading…</p>;
@@ -59,10 +73,38 @@ export function SeatMapPage() {
         {data.screen.cinema_name}
       </p>
 
-      <SeatMap layout={data.screen.layout} seatAt={index.seatAt} />
+      <SeatMap
+        layout={data.screen.layout}
+        seatAt={index.seatAt}
+        isSelected={selection.isSelected}
+        onToggle={selection.toggle}
+        limitReached={selection.limitReached}
+      />
       <Legend tiers={data.screen.layout.tiers} tierPrices={index.tierPrices} />
 
-      {/* Selecting seats is Module 3.3; the summary and booking are 3.4. */}
+      {/* Announced rather than silently changing, so a screen reader hears the
+          running total the same way a sighted user sees it. */}
+      <p className="selection" aria-live="polite">
+        {selection.count === 0
+          ? 'No seats selected'
+          : `${selection.count} seat${selection.count === 1 ? '' : 's'} selected · ${formatPaise(
+              selection.totalPaise,
+            )}`}
+        {selection.count > 0 ? (
+          <>
+            {' '}
+            <button type="button" onClick={selection.clear}>
+              Clear
+            </button>
+          </>
+        ) : null}
+      </p>
+
+      {selection.limitReached ? (
+        <p className="selection__limit">{MAX_SEATS} seats maximum.</p>
+      ) : null}
+
+      {/* The price breakdown, the proceed button and the booking call are 3.4. */}
     </>
   );
 }
