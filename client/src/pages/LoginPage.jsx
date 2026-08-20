@@ -1,10 +1,17 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 
 export function LoginPage() {
   const { user, login, register } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Set when a page sent the visitor here mid-task — the seat map does, so it
+  // can get them back to the show they were booking, with their seats. A direct
+  // visit to /login carries no state and still lands on the movie list.
+  const returnTo = location.state?.from ?? '/';
+  const seatIds = location.state?.seatIds;
 
   const [registering, setRegistering] = useState(false);
   const [email, setEmail] = useState('');
@@ -24,7 +31,9 @@ export function LoginPage() {
       } else {
         await login(email, password);
       }
-      navigate('/');
+      // replace, so Back does not return to a login form the visitor has
+      // already completed.
+      navigate(returnTo, { replace: true, state: seatIds ? { seatIds } : null });
     } catch (err) {
       // The server's message is safe to show: it is written for humans and
       // says the same thing for an unknown email as for a wrong password.

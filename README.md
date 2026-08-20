@@ -3,10 +3,14 @@
 Concurrent seat reservation system — the booking path for a cinema, built to be
 correct under contention rather than merely functional.
 
-**Status:** Phase 2 (Booking correctness) complete on `feat/booking-core`, with
-measured before/after concurrency numbers below. Phase 1 — schema,
-authentication, seed data and the read APIs — is deployed. Seat holds arrive in
-Phase 4 and payment in Phase 5, so a booking is created and stays `pending`.
+**Status:** Phase 3 (Seat map UI) complete on `feat/seat-map` — a React client
+that browses shows, renders the seat map, selects up to six seats and books them
+through the Phase 2 endpoint, with a recorded rendering baseline below. Phase 2's
+before/after concurrency numbers are below too. Seat holds arrive in Phase 4 and
+payment in Phase 5, so a booking is created and stays `pending`.
+
+The API is deployed; **the client is not deployed yet** — it is a separate
+Render static site, authorized separately.
 
 ## Demo
 
@@ -87,6 +91,7 @@ is required; the server refuses to start without `JWT_SECRET`.
 | `JWT_SECRET` | generate one, see below |
 | `JWT_EXPIRES_IN` | `7d` |
 | `BOOKING_MODE` | `safe` — `naive` only for the baseline measurement below |
+| `CLIENT_ORIGIN` | `http://localhost:5173` — the browser client's exact origin, for CORS |
 
 Ports are **5433** and **6380**, not the Postgres and Redis defaults — the
 defaults were already taken on the machine this was built on. `docker-compose.yml`
@@ -121,7 +126,18 @@ npm run seed
 that is what makes it re-runnable. It refuses to run when `NODE_ENV=production`
 unless `--force` is passed.
 
+### Seed the stress dataset (optional)
+
+Adds one 5,000-seat screen, `Stadium (stress)`, and a show on it — the dataset
+behind the rendering baseline below. It is **additive**: it never truncates, and
+re-running it replaces only its own screen, so the demo data is untouched.
+
+```bash
+npm run seed:stress     # prints the show id; the map is at /shows/<id>
+```
+
 ### Run
+
 
 ```bash
 npm run dev     # node --watch
@@ -130,7 +146,31 @@ npm start
 
 Then `curl localhost:3000/health` — expect `{"status":"ok","db":"ok","redis":"ok"}`.
 
-## API surface (Phase 1)
+### The client
+
+```bash
+cp client/.env.example client/.env    # VITE_API_BASE_URL=http://localhost:3000
+npm run dev:client                    # http://localhost:5173
+```
+
+`CLIENT_ORIGIN` in the root `.env` must match the client's origin exactly —
+`http://localhost:5173` for `dev:client`, `http://localhost:4173` for
+`preview:client`. There is no wildcard: the client sends its session cookie on
+every request, and a wildcard origin is not permitted for credentialed requests.
+
+Client variables live in `client/.env`, not the root `.env`, because Vite bakes
+them into the bundle at build time. Nothing secret may go in that file —
+everything in it ships to the browser.
+
+```bash
+npm run build:client      # production bundle into client/dist
+npm run preview:client    # serve that bundle on http://localhost:4173
+```
+
+Sign in with the demo account above. Selection is client-side and needs no
+account; only booking does.
+
+## API surface
 
 Every non-2xx response under `/api` is
 `{"error":{"code":"SCREAMING_SNAKE","message":"..."}}`. The code is the stable
@@ -150,11 +190,26 @@ part; clients branch on it.
 | `POST` | `/api/auth/register` | `{email, password, name}` | `201 {user, token}` | `409 EMAIL_TAKEN`, `400 VALIDATION_ERROR` |
 | `POST` | `/api/auth/login` | `{email, password}` | `200 {user, token}` | `401 INVALID_CREDENTIALS` |
 | `GET` | `/api/auth/me` | `Authorization: Bearer <token>` | `200 {user}` | `401 UNAUTHENTICATED` |
+| `POST` | `/api/auth/logout` | none | `204`, clears the cookie | — |
 
 Tokens are HS256, default lifetime 7 days. Passwords are hashed with bcrypt;
 `password_hash` never appears in a response. An unknown email and a wrong
 password return the identical 401, so the endpoint cannot be used to enumerate
 accounts.
+
+**Two transports, one session.** Register and login return `{user, token}` as
+before *and* set an `httpOnly` cookie. `requireAuth` accepts either, and
+**Bearer takes precedence**, so `curl`, k6 and every documented example keep
+working byte-for-byte. The browser client uses only the cookie and never reads
+the token, so no session material is reachable from JavaScript.
+
+Because the deployed client is a different site (`onrender.com` is a public
+suffix), the cookie needs `SameSite=None`, which removes the CSRF protection
+`SameSite` normally provides. The replacement: cookie-authenticated
+**state-changing** requests must also send `X-Requested-With: show-rush`, a
+header a cross-site form post cannot set. Missing it returns
+`403 CSRF_HEADER_REQUIRED`. Bearer-authenticated requests are exempt — an
+`Authorization` header is itself not forgeable cross-site.
 
 ### Catalogue and seat map
 
@@ -329,6 +384,83 @@ Full method, deviations, and the variance discussion:
 [`docs/phases/phase-2-booking-core.md`](docs/phases/phase-2-booking-core.md) and
 [`loadtest/README.md`](loadtest/README.md).
 
+### Seat map rendering — 5,000 seats, DOM
+
+The Phase 3 seat map is a plain DOM grid: one `<button>` per seat, no
+memoisation, no virtualisation. These two numbers are the **"before"** for the
+canvas renderer in [`BACKLOG.md`](BACKLOG.md) P1. Without them that work would
+be unclaimable, which is the only reason they exist.
+
+| Metric | Result |
+|---|---|
+| **`SeatButton` components re-rendered per seat click** | **5,000 — every seat, in all 10 trials** |
+| **Click-to-paint latency** | **median 79.0 ms** · range 33.2–113.4 ms · n=10 |
+| React commits per click | 1 (all 10 trials) |
+| Fibers receiving new props per commit | 15,629–15,645 |
+| DOM nodes on the page | 5,563 |
+
+Clicking one seat re-renders all 5,000. That is what an unmemoised DOM grid
+does, and it is deliberate — memoising it now would leave the canvas rewrite
+with a strawman to beat. Nothing here is a claim about the backend.
+
+<details>
+<summary>How these were measured</summary>
+
+```bash
+npm run seed          # demo dataset, untouched by the next line
+npm run seed:stress   # adds "Stadium (stress)": 100 rows x 50 = 5,000 seats
+                      # prints the show id — the map is at /shows/<id>
+
+PROFILE=1 npm run build:client       # production build, profiling hooks kept
+npm run preview:client               # serves the build, never the dev server
+```
+
+**Procedure.** 10 trials on 10 distinct available seats spread across the grid
+(`A1, C38, F25, I12, K49, N36, Q23, T10, V47, Y34`), one warm-up click
+discarded. Each trial: reset selection, `click()` the seat, then measure to the
+second `requestAnimationFrame` after the click — i.e. after the frame carrying
+the update has been painted. The seat is clicked again to deselect before the
+next trial, so every trial starts from an empty selection and none of them hits
+the six-seat ceiling.
+
+**How re-renders were counted.** A minimal stand-in for the React DevTools
+global hook was installed in the page and `onCommitFiberRoot` walked the fiber
+tree on every commit. A component that re-rendered receives a freshly created
+props object from its parent, while a subtree React bails out of keeps the
+identical reference — so `alternate.memoizedProps !== memoizedProps` counts
+exactly the components that rendered, independent of timer resolution.
+
+Counting instead by `actualDuration > 0`, which is the timing-based signal,
+reported only 205–424 components. That is a **severe undercount**: at 5,000
+components most individual renders fall below the clock's resolution. The
+reference comparison is the number reported above; the timing-based figure is
+recorded here so the discrepancy is not rediscovered later as a contradiction.
+
+**No application component was modified to measure this.** The profiling build
+is enabled by `PROFILE=1` in `client/vite.config.js`; an ordinary
+`npm run build:client` produces a byte-identical bundle to one built before that
+flag existed (`index-DVXeHI2f.js` in both cases).
+
+| | |
+|---|---|
+| Machine | Windows 11, 16 logical cores, WSL2 Ubuntu for the server side |
+| Browser | Google Chrome 151, viewport 1280x609, devicePixelRatio 1.5 |
+| Build | production, `PROFILE=1` (profiling hooks retained), served by `vite preview` |
+| React | 19.2.8 · Vite 8.2.2 · Node v22.23.2 |
+| Dataset | `npm run seed:stress` — 100 rows x 50 seats = 5,000, one show |
+| Samples | 10 trials, median and full range reported |
+| Date | 2026-08-21 |
+| Commit | Phase 3 (`feat/seat-map`) |
+
+**What these numbers are not.** They are single-point client-side measurements
+on one machine, one browser and one viewport. They are not throughput, not
+capacity, not a server benchmark, and they say nothing about any other device.
+The re-render count is a property of the implementation and does not vary; the
+latency figure does, which is why the full range is given rather than a single
+figure.
+
+</details>
+
 ### Everything else
 
 **Not measured.** Hold throughput, availability-query latency and WebSocket
@@ -348,7 +480,16 @@ benchmark of the system.
 - No refresh tokens; a 7-day access token is the whole session model.
 - No password reset, email verification, or roles.
 - No rate limiting on the auth endpoints.
-- No automated test suite; Phase 1 was verified by scripted HTTP and SQL checks.
+- No automated test suite; every phase was verified by scripted HTTP, SQL and
+  browser checks rather than a test framework.
+- The client is not deployed yet, so the cross-site cookie configuration
+  (`SameSite=None; Secure`) is **not verified in production** — only the local
+  same-site path is.
+- Two money formatters co-exist: `client/src/money.js` for totals and a local
+  helper inside `Legend.jsx`. Deliberate, to keep a module boundary; worth
+  folding together.
+- The seat map is a plain DOM grid — one click re-renders all 5,000 seats on the
+  stress dataset. Measured, not guessed; the canvas rewrite is `BACKLOG.md` P1.
 - Single instance, free tier. Benchmarks will be run locally, not on this host.
 
 ## Documentation

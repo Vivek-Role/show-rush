@@ -1455,3 +1455,233 @@ here for the reason recorded in §23.4.
 | Seat recommendation, group-seating rules | `BACKLOG.md` P2/P3 |
 | Any server, migration, `loadtest/` or control-file change | not this module |
 | A test framework | Q7 — not without separate approval |
+
+---
+
+## 26. Scope amendments approved during implementation
+
+The module tables in §6 were written before the code existed. Where
+implementation showed a table to be incomplete, the gap was reported and ruled
+on individually rather than absorbed. This section is the record; §6 is left
+exactly as approved.
+
+| Module | File added to scope | Why it was unavoidable | Ruling |
+|---|---|---|---|
+| 3.2 | `client/src/App.jsx` | The only router in the app; §6's 3.2 table omitted it, but Module 3.1 ruling (b) had already deferred the `/shows/:id` route to 3.2 | Approved |
+| 3.2 | `client/src/pages/ShowsPage.jsx` | Shows had to become links for the seat map to be reachable | Approved |
+| 3.3 | `client/src/seatmap/SeatButton.jsx` | §6 gave it only a `seat` prop, but it is the clickable element — selection cannot be wired without it | Approved |
+| 3.3 | `client/src/seatmap/seatmap.css` | A selection with no visual state fails §6.3's own done-when | Approved |
+| 3.4 | `client/src/pages/LoginPage.jsx` | §6.4 requires that an unauthenticated visitor "returns to the same show" after login; `navigate('/')` was hard-coded | Approved |
+| 3.5 | `client/vite.config.js` | See §26.1 | Approved |
+
+Declined on purpose, to keep the expansions minimal:
+
+- **`client/src/seatmap/Legend.jsx`** was proposed in §25.3 so both price
+  formatters could be unified on `money.js`. The ruling kept `money.js` as
+  Module 3.3's single new money file and left `Legend` alone. Two formatters
+  therefore co-exist: `money.js` for the summary and totals, and a local
+  `rupees()` inside `Legend.jsx`. Recorded as a known duplication, not an
+  oversight.
+
+### 26.1 `client/vite.config.js` — the profiling build
+
+**Why it is required.** §12 (decision D8, question Q9) specifies that the
+baseline is measured on a **production build with profiling enabled**. React's
+production build strips the profiling hooks, so React DevTools cannot attach to
+it and **"re-renders per seat click" cannot be measured at all**. The fallback
+documented in §12.2 needs the same profiling-enabled build for that number, so
+there is no path that avoids the change.
+
+Building in development mode instead was rejected: StrictMode double-renders in
+development, which would inflate the exact number being recorded.
+
+**What changed.** Four lines, gated on an environment variable:
+
+```js
+const profiling = process.env.PROFILE === '1';
+...(profiling
+  ? { resolve: { alias: { 'react-dom/client': 'react-dom/profiling' } } }
+  : {}),
+```
+
+- `npm run build:client` is **unaffected** — the deployed bundle never contains
+  the profiling build.
+- `PROFILE=1 npm run build:client` produces the measurement build, so the
+  procedure in §12.3 is reproducible by anyone rather than depending on a local
+  hack.
+- **No new dependency:** `react-dom/profiling` is an entry point of the
+  already-installed `react-dom` 19.2.8.
+- **No application component was changed for measurement.** Instrumenting
+  `SeatButton` with a render counter was considered and rejected — it would
+  alter the component being measured.
+
+---
+
+## 27. Phase 3 — close-out
+
+**Status:** IMPLEMENTED and VERIFIED. Not committed at time of writing.
+**Branch:** `feat/seat-map`, on top of `727c38b`.
+**Written:** 2026-08-21
+
+Modules 3.1 and 3.2 and 3.3 were committed individually (`f51e75f`, `1d5d712`,
+`727c38b`). Modules 3.4 and 3.5 were implemented back to back under a revised
+workflow that batches verification to the end of the phase, so the results below
+cover the phase as a whole rather than one module.
+
+### 27.1 What exists at the end of Phase 3
+
+A React client — served separately from the API, talking to it cross-origin —
+that lists movies, lists a movie's shows, renders a seat map from the layout
+JSON, selects up to six seats with a running total, and books them through the
+Phase 2 endpoint. Sessions survive a refresh via an httpOnly cookie. A 5,000-seat
+dataset and two recorded rendering numbers exist so the canvas rewrite in
+`BACKLOG.md` P1 has a defensible "before".
+
+### 27.2 Comprehensive verification
+
+Environment: WSL2 Ubuntu, Node v22.23.2, local Docker Postgres 17 and Redis,
+API on :3000, **production build** served by `vite preview` on :4173, Google
+Chrome 151 driven programmatically.
+
+**Build and scope**
+
+| Check | Result |
+|---|---|
+| Normal production build | **PASS** — 241.74 kB (77.34 kB gzip), `index-DVXeHI2f.js` |
+| `PROFILE=1` build | **PASS** — 258.49 kB, a distinct bundle |
+| Profiling gate is inert for normal builds | **PASS** — the normal bundle hash is identical before and after `vite.config.js` changed |
+| No dependency added in 3.4 or 3.5 | **PASS** — all four manifests unchanged except the `seed:stress` scripts |
+
+**Module 3.1 — shell, CORS, auth (regression)**
+
+| Check | Result |
+|---|---|
+| Cross-origin fetch from the client origin | **PASS** — 5 movies rendered |
+| Session survives a full page load | **PASS** |
+| Cookie unreadable from JavaScript | **PASS** — `document.cookie` never contains `sr_token` |
+| Logout | **PASS** — header returns to "Log in", proceed reverts to "Log in to book" |
+
+**Module 3.2 — seat grid (regression)**
+
+| Check | Result |
+|---|---|
+| Show 1 geometry | **PASS** — 160 seats, 10 rows, 2 aisles per row |
+| Booked seats unselectable | **PASS** — exactly `A1,A2,C5,C6,C7,I3,I4` |
+| Legend | **PASS** — silver ₹200 · gold ₹320 · platinum ₹450 · unavailable |
+| Navigation `/` → `/movies/:id` → `/shows/:id` | **PASS** |
+
+**Module 3.3 — selection (regression)**
+
+| Check | Result |
+|---|---|
+| Six-seat ceiling | **PASS** — 6 selected, `6 seats maximum.` shown |
+| Seventh refused, oldest kept | **PASS** — count stays 6, first seat still `aria-pressed="true"`, seventh `aria-disabled="true"` and still focusable |
+| Deselect and running total | **PASS** — 5 seats, ₹1,360, matching the hand-computed paise sum |
+
+**Module 3.4 — booking**
+
+| Check | Result |
+|---|---|
+| Logged-in booking, end to end | **PASS** — `SR-CSGD5RRPKG`, 5 seats, ₹1,360; seats then read `booked` |
+| Booking result content | **PASS** — reference, seats, total, and the explicit "not paid yet — payment is Phase 5" note |
+| Logged-out → login → same show | **PASS** — routed with `{from, seatIds}`, returned to `/shows/2` |
+| Selection survives the login redirect | **PASS** — both seats restored, handoff state consumed |
+| `409 SEATS_UNAVAILABLE` | **PASS** — a second client took a seat by `curl`; the message appeared, the map refreshed, the lost seat dropped itself from the selection, the other two were kept, nothing was booked |
+| `401 UNAUTHENTICATED` | **PASS** — cookie cleared underneath the app; session dropped, routed to login carrying the seats, restored after re-login |
+| `404 NOT_FOUND` | **PASS** — POST rewritten to a nonexistent show; client navigated to the movie page |
+
+**Module 3.5 — dataset and measurement**
+
+| Check | Result |
+|---|---|
+| `rowLabel()` indices 0–25 unchanged | **PASS** — 0 mismatches against the old implementation |
+| Multi-letter labels | **PASS** — `Z → AA → AB`, `AZ → BA`, index 99 = `CV`, all `^[A-Z]+$`, all unique |
+| Demo seed byte-identical after the change | **PASS** — seats fingerprint `89a62a21…` identical before and after re-seeding |
+| `npm run seed:stress` | **PASS** — 100 rows × 50 = 5,000 seats, prints the show id |
+| Additive, demo data untouched | **PASS** — demo fingerprint unchanged, 504 demo seats, bookings 5, booking_seats 11 |
+| Re-runnable | **PASS** — second run reports "Replaced", still exactly 1 stress screen and 5,000 seats |
+| 5,000 seats render | **PASS** — rows `A`…`CV`, 5,000 buttons |
+
+**Measured baseline** — 10 trials, production build with profiling, Chrome 151:
+
+| Metric | Result |
+|---|---|
+| `SeatButton` re-renders per click | **5,000 in every trial** |
+| Click-to-paint | **median 79.0 ms**, range 33.2–113.4 ms |
+| Commits per click | 1 |
+
+Full method, including why the timing-based count (205–424) was rejected as a
+severe undercount in favour of the props-reference comparison, is in `README.md`.
+
+**Database side-effects**
+
+| Check | Result |
+|---|---|
+| Double-booked seats across all verification | **0** |
+| Verification bookings removed | **PASS** — `npm run seed` restored 5 bookings / 11 booking_seats / 504 seats, fingerprint `89a62a21…` |
+| Neon / production | **Untouched.** No connection made, no query run |
+
+### 27.2.1 Second-geometry reproduction — Module 3.4 navigation on show 3
+
+The Module 3.4 navigation result in §27.2 was recorded against show 2. It was
+challenged at close-out, so the flow was reproduced once against a **second
+geometry** — show 3, `Audi 3 (IMAX)` — to confirm the behaviour is not specific
+to one route. No implementation code was changed, and no performance
+measurement was repeated.
+
+Screen geometry, as verified in §24.2 check 12: **260 seats, 13 rows `A`–`M`,
+20 seats per row, aisles after columns 5 and 15.**
+
+| Step | URL | Router state |
+|---|---|---|
+| Start, logged out (header reads "Log in") | `/shows/3` | — |
+| Selected `D5`, `D6` — `2 seats selected · ₹400` | `/shows/3` | — |
+| Clicked "Log in to book" | `/login` | `{from: "/shows/3", seatIds: ["309","310"]}` |
+| Submitted the real login form | **`/shows/3`** | consumed (`null`) |
+
+| Check | Result |
+|---|---|
+| Final URL after login | **PASS** — `/shows/3`, matching `^/shows/\d+$`; full URL `http://localhost:4173/shows/3` |
+| Selection survives the handoff | **PASS** — `D5`, `D6` restored by their API ids `309`, `310`, not by position |
+| Summary after return | **PASS** — `2 seats selected · ₹400`, proceed enabled, header `demo@show-rush.dev` |
+| Seat map re-rendered | **PASS** — 260 seats on the page, consistent with the geometry above |
+| Direct `/login` default preserved | **PASS** — logging out, visiting `/login` with no router state and signing in lands on `/` |
+
+This confirms the §27.2 result rather than correcting it: the recorded
+behaviour was already `/shows/2`, and show 3 now provides the second data point.
+The earlier record is left exactly as written.
+
+### 27.3 Deviations
+
+1. **`seatIndex.js` returns `{ seatAt, tierPrices }`, not `counts`** (§24.3).
+2. **Price formatting is duplicated** — `money.js` for totals, a local `rupees()`
+   in `Legend.jsx`. A deliberate ruling, recorded in §26.
+3. **Six files were added to the module tables during implementation.** Each was
+   reported and approved individually; the record is §26.
+4. **Two defects were found by browser verification and fixed**: the `Intl`
+   `dateStyle` + `timeZoneName` combination that threw at module load (§22.5),
+   and a `ReferenceError` from a `seatIds` shorthand that referenced a variable
+   destructured under a different name. Both blanked the page with a clean build
+   and no console error. Neither would have been caught by HTTP-level checks.
+
+### 27.4 Not verified, and not claimed
+
+- **Production cookie behaviour** (`SameSite=None; Secure`, cross-site). The
+  client is not deployed, so only the local same-site path has been exercised.
+- **Deployment of the static site**, `render.yaml`, and `CLIENT_ORIGIN` in the
+  Render dashboard — Q6 deferred all three to a separately authorized step.
+- **Any performance claim beyond the two recorded numbers.** No throughput, no
+  capacity, no comparison against another device or browser.
+- Phase 2's contention suite was **not re-run**: no server code on the booking
+  path changed in Phase 3.
+
+### 27.5 Open items handed forward
+
+- Deploy the client as a Render static site and verify the cross-site cookie
+  (Q6, separately authorized).
+- Fold `Legend.jsx` onto `money.js` when a module boundary no longer forbids it.
+- The Phase 2 documentation mismatch reported in §18 is still unaddressed, by
+  instruction.
+- `BACKLOG.md` P1's canvas renderer now has its "before": 5,000 re-renders per
+  click and a 79 ms median click-to-paint, both reproducible with
+  `npm run seed:stress` and `PROFILE=1 npm run build:client`.

@@ -132,3 +132,26 @@ export function showStartsAt(dayOffset, time) {
     midnight.getTime() + dayOffset * 86400000 + hours * 3600000 + minutes * 60000,
   );
 }
+
+// Module 3.5 — the stress dataset behind the frontend baseline numbers.
+//
+// 100 rows x 50 seats = 5,000 seats on one screen, which is what makes the DOM
+// seat map slow enough to measure. Every value is a constant, so the layout is
+// identical on every run and the recorded measurement stays reproducible.
+//
+// This screen is seeded by stress.js and is never part of the demo dataset.
+// Its name is the key stress.js matches on when clearing a previous run, so it
+// must stay exactly as written.
+export const STRESS_SCREEN = {
+  name: 'Stadium (stress)',
+  seatsPerRow: 50,
+  aislesAfterColumn: [10, 25, 40],
+  tierBands: [
+    { tier: 'silver', rows: 40 },
+    { tier: 'gold', rows: 40 },
+    { tier: 'platinum', rows: 20 },
+  ],
+};
+
+// A fixed slot, so re-running produces the same timestamp on the same day.
+export const STRESS_SHOW = { dayOffset: 0, time: '12:00' };
