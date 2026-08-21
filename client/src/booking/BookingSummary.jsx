@@ -1,5 +1,12 @@
 import { formatPaise } from '../money.js';
 
+// The number itself comes from the server's TTL — this only decides how it
+// reads. m:ss, because "419 seconds" is not how anyone thinks about a wait.
+function formatCountdown(seconds) {
+  const safe = Math.max(0, seconds);
+  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
 // What is selected, what it costs, and the one button that turns it into a
 // booking. Holds no state: everything arrives from the selection hook via
 // SeatMapPage.
@@ -12,6 +19,7 @@ export function BookingSummary({
   maxSeats,
   busy,
   signedIn,
+  secondsLeft,
   onProceed,
   onClear,
   error,
@@ -35,6 +43,14 @@ export function BookingSummary({
       </p>
 
       {limitReached ? <p className="selection__limit">{maxSeats} seats maximum.</p> : null}
+
+      {/* Only while something is actually held. Announced politely rather than
+          assertively: a ticking clock read out every second would be unusable. */}
+      {secondsLeft === null || secondsLeft === undefined || count === 0 ? null : (
+        <p className="selection__hold" aria-live="polite">
+          Seats held for {formatCountdown(secondsLeft)}
+        </p>
+      )}
 
       {count > 0 ? (
         <>

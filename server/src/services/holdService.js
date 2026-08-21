@@ -23,7 +23,12 @@ export const HOLD_TTL_SECONDS = 420;
 // One key per held seat. The show id is in the key because a seat belongs to a
 // screen, and the same screen runs many shows — a hold is per showing, not per
 // seat forever.
-function holdKey(showId, seatId) {
+//
+// Exported for Module 4.3: availabilityService reads these keys directly for
+// the seats it has already fetched from Postgres. That is the merge, and it
+// belongs to availabilityService — which is why what leaves this module is the
+// key format and not a "which seats are held" answer.
+export function holdKey(showId, seatId) {
   return `hold:${showId}:${seatId}`;
 }
 

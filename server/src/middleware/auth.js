@@ -15,6 +15,31 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // header is the proof that a cookie-authenticated write came from our client.
 const CSRF_HEADER_VALUE = 'show-rush';
 
+// Module 4.3. The seat map is public, but its answer depends on who is asking:
+// the viewer's own holds are theirs to book, everybody else's read as 'held'.
+// So a session is resolved when one is present and ignored when it is not —
+// never refused. A bad or expired token leaves req.user unset rather than 401,
+// because an anonymous seat map is a perfectly good seat map.
+//
+// No CSRF check here: this guards reads only, and a cookie riding along on a
+// GET changes nothing.
+export async function optionalAuth(req, res, next) {
+  try {
+    const [scheme, bearer] = (req.get('authorization') ?? '').split(' ');
+    const token = scheme === 'Bearer' && bearer ? bearer : req.cookies?.[AUTH_COOKIE];
+    if (!token) return next();
+
+    const payload = verifyToken(token);
+    const user = await findUserById(payload.sub);
+    if (user) req.user = user;
+  } catch {
+    // Anonymous. Deliberately silent — an unreadable token is not an error on
+    // a route that never required one.
+  }
+
+  next();
+}
+
 // Express 5 forwards rejected async middleware to the error handler, so this
 // needs no try/catch wrapper.
 export async function requireAuth(req, res, next) {

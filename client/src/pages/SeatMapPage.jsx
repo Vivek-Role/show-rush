@@ -8,6 +8,7 @@ import { BookingSummary } from '../booking/BookingSummary.jsx';
 import { Legend } from '../seatmap/Legend.jsx';
 import { SeatMap } from '../seatmap/SeatMap.jsx';
 import { buildSeatIndex } from '../seatmap/seatIndex.js';
+import { useSeatHolds } from '../seatmap/useSeatHolds.js';
 import { useSeatSelection } from '../seatmap/useSeatSelection.js';
 
 // The server enforces this in validate.js; the client repeats it so the sixth
@@ -79,13 +80,67 @@ export function SeatMapPage() {
   // All selection state lives in the hook. This page owns it and passes it
   // down; nothing below holds a selection of its own.
   const selection = useSeatSelection({ seats, maxSeats: MAX_SEATS });
-  const { toggle, selectedIds } = selection;
+  const { toggle, selectedIds, isSelected, limitReached, clear } = selection;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedSeats = useMemo(
     () => seats.filter((seat) => selectedIdSet.has(seat.id)),
     [seats, selectedIdSet],
   );
+
+  // A hold expiring is not an error the visitor caused, so it is said plainly
+  // and the seats go back on the map. They were never theirs to keep.
+  const onHoldExpired = useCallback(() => {
+    clear();
+    setBookingError('Your seat hold expired. Those seats are available to everyone again.');
+    void load({ silent: true });
+  }, [clear, load]);
+
+  const holds = useSeatHolds({ showId: id, enabled: Boolean(user), onExpire: onHoldExpired });
+  const { hold, release, releaseAll, restore } = holds;
+
+  // Selecting a seat is what takes the hold, which is what makes two tabs
+  // unable to hold the same seat. Signed out there is no hold to take — the
+  // selection still works, and the server refuses the booking anyway.
+  const onSeatToggle = useCallback(
+    async (seatId) => {
+      const wasSelected = isSelected(seatId);
+
+      // The hook refuses the seventh seat. Asking the server to hold one it is
+      // about to refuse would take a seat nobody gets to use.
+      if (!wasSelected && limitReached) return;
+
+      toggle(seatId);
+      if (!user) return;
+
+      if (wasSelected) {
+        void release([seatId]);
+        return;
+      }
+
+      const result = await hold([seatId]);
+      if (result.ok) return;
+
+      // Put the seat back the way it was. The selection is local, the hold is
+      // authoritative, and the two must not disagree.
+      toggle(seatId);
+      setBookingError(result.message);
+      await load({ silent: true });
+    },
+    [isSelected, limitReached, toggle, user, hold, release, load],
+  );
+
+  // After a refresh the seat ids come from sessionStorage and their validity
+  // from the server. Only what it confirms is re-selected.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (!data || !user || restoredRef.current) return;
+    restoredRef.current = true;
+
+    void restore().then((confirmed) => {
+      for (const seatId of confirmed) toggle(seatId);
+    });
+  }, [data, user, restore, toggle]);
 
   // Signing in unmounts this page, so the chosen seats travel with the redirect
   // and are re-applied on the way back. toggle() re-validates every one of
@@ -97,9 +152,20 @@ export function SeatMapPage() {
 
     for (const seatId of restoreIds) toggle(seatId);
 
+    // The seats were chosen before there was a session to hold them with, so
+    // the hold is taken now. A seat someone else took in the meantime is
+    // refused here and dropped by the refetch, exactly as a click would be.
+    if (user) {
+      void hold(restoreIds).then((result) => {
+        if (result.ok) return;
+        setBookingError(result.message);
+        return load({ silent: true });
+      });
+    }
+
     // Consume the handoff, so a later refresh does not re-apply it.
     navigate(location.pathname, { replace: true, state: null });
-  }, [data, restoreIds, toggle, navigate, location.pathname]);
+  }, [data, restoreIds, toggle, navigate, location.pathname, user, hold, load]);
 
   const goToLogin = useCallback(() => {
     navigate('/login', { state: { from: location.pathname, seatIds: selectedIds } });
@@ -119,7 +185,13 @@ export function SeatMapPage() {
     try {
       const payload = await createBooking({ showId: id, seatIds: selectedIds });
       setBooking(payload.booking);
-      selection.clear();
+      clear();
+
+      // The booking is committed, so the hold has done its job. Released after
+      // the fact and best effort: a hold outliving its booking is harmless —
+      // the seat is already sold — which is why nothing here waits on it.
+      void releaseAll();
+
       await load({ silent: true });
     } catch (err) {
       // Branch on the stable code, never on the message.
@@ -171,7 +243,7 @@ export function SeatMapPage() {
         layout={data.screen.layout}
         seatAt={index.seatAt}
         isSelected={selection.isSelected}
-        onToggle={toggle}
+        onToggle={onSeatToggle}
         limitReached={selection.limitReached}
       />
       <Legend tiers={data.screen.layout.tiers} tierPrices={index.tierPrices} />
@@ -185,6 +257,7 @@ export function SeatMapPage() {
         maxSeats={MAX_SEATS}
         busy={busy}
         signedIn={Boolean(user)}
+        secondsLeft={holds.secondsLeft}
         onProceed={onProceed}
         onClear={selection.clear}
         error={bookingError}

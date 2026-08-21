@@ -23,7 +23,9 @@ export function createApp() {
     cors({
       origin: config.clientOrigin,
       credentials: true,
-      methods: ['GET', 'POST', 'OPTIONS'],
+      // DELETE joins the list for Module 4.2's release-hold route: without it
+      // the browser's preflight refuses the request before it is ever sent.
+      methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     }),
   );
