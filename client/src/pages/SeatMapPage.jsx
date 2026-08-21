@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { createBooking } from '../api/bookings.js';
 import { request } from '../api/client.js';
+import { confirmPayment } from '../api/payments.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { BookingResult } from '../booking/BookingResult.jsx';
 import { BookingSummary } from '../booking/BookingSummary.jsx';
@@ -42,6 +43,14 @@ export function SeatMapPage() {
   const [booking, setBooking] = useState(null);
   const [bookingError, setBookingError] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState(null);
+
+  // One payment event id per booking, generated when the booking is created and
+  // kept until it is dismissed. Pressing Pay a second time therefore replays the
+  // same event rather than starting a new one — which is what makes the
+  // idempotency layer visible in the browser instead of only under k6.
+  const paymentEventRef = useRef(null);
 
   // Stops an older in-flight request from overwriting a newer one when the
   // seat map is reloaded after a conflict.
@@ -184,6 +193,8 @@ export function SeatMapPage() {
 
     try {
       const payload = await createBooking({ showId: id, seatIds: selectedIds });
+      paymentEventRef.current = crypto.randomUUID();
+      setPayError(null);
       setBooking(payload.booking);
       clear();
 
@@ -228,6 +239,58 @@ export function SeatMapPage() {
     }
   }
 
+  // Module 5.5. The event id comes from the ref, so a second press is a replay
+  // of the first event and not a new payment. The server decides what that
+  // means; this only reports the answer.
+  async function onPay() {
+    if (!booking || paying) return;
+
+    setPaying(true);
+    setPayError(null);
+
+    try {
+      const payload = await confirmPayment({
+        bookingRef: booking.booking_ref,
+        paymentEventId: paymentEventRef.current,
+      });
+
+      // The payment response describes the booking without its seats, so the
+      // status is taken from the server and the seats stay as booked.
+      setBooking((current) => ({ ...current, status: payload.booking.status }));
+
+      // A paid seat is a booked seat, and the map already showed it that way.
+      // Refreshed anyway so nothing on screen is older than the payment.
+      await load({ silent: true });
+    } catch (err) {
+      // Branch on the stable code, never on the message.
+      switch (err.code) {
+        case 'PAYMENT_FAILED':
+          setPayError('The payment did not go through. The seats are still yours — try again.');
+          break;
+
+        case 'BOOKING_NOT_PENDING':
+          setPayError('That booking can no longer be paid for.');
+          break;
+
+        case 'UNAUTHENTICATED':
+          await logout();
+          goToLogin();
+          break;
+
+        default:
+          setPayError('Payment failed. Nothing was charged — you can try again.');
+      }
+    } finally {
+      setPaying(false);
+    }
+  }
+
+  function onDismissBooking() {
+    paymentEventRef.current = null;
+    setPayError(null);
+    setBooking(null);
+  }
+
   if (error) return <p>{error}</p>;
   if (!data) return <p>Loading…</p>;
 
@@ -263,7 +326,15 @@ export function SeatMapPage() {
         error={bookingError}
       />
 
-      {booking ? <BookingResult booking={booking} onDismiss={() => setBooking(null)} /> : null}
+      {booking ? (
+        <BookingResult
+          booking={booking}
+          onPay={onPay}
+          paying={paying}
+          payError={payError}
+          onDismiss={onDismissBooking}
+        />
+      ) : null}
     </>
   );
 }

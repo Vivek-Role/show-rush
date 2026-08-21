@@ -6,6 +6,7 @@ import { authRouter } from './routes/auth.js';
 import { bookingsRouter } from './routes/bookings.js';
 import { healthRouter } from './routes/health.js';
 import { moviesRouter } from './routes/movies.js';
+import { paymentsRouter } from './routes/payments.js';
 import { showsRouter } from './routes/shows.js';
 import { errorHandler, notFound } from './middleware/error.js';
 
@@ -37,6 +38,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/bookings', bookingsRouter);
   app.use('/api/movies', moviesRouter);
+  app.use('/api/payments', paymentsRouter);
   app.use('/api/shows', showsRouter);
 
   app.use(notFound);

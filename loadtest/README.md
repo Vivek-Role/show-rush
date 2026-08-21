@@ -1,17 +1,20 @@
 # loadtest
 
-The evidence behind Phase 2's before/after numbers. A metric without a
-reproducible script is a claim, so the script lives here, in the repository,
+The evidence behind the build's two non-negotiable numbers — Phase 2's
+before/after double-booking count, and Phase 5's replay test. A metric without a
+reproducible script is a claim, so each script lives here, in the repository,
 next to the SQL that counts what it produced.
 
 | File | What it is |
 |---|---|
 | `seat-contention.js` | k6 script — N virtual users book the **same seat** on the **same show** at the same moment |
 | `count-double-bookings.sql` | the measurement — how many seats ended up sold twice |
+| `webhook-replay.js` | k6 script — N virtual users confirm the **same payment event** against the **same booking** (Phase 5.4) |
+| `count-payment-replay.sql` | the measurement — how many rows one replayed event produced |
 | `results/` | raw k6 summaries behind each recorded number (created by Module 2.3) |
 
-The script produces requests. It never reports a double-booking count — that
-comes from the database afterwards, via the SQL.
+A script produces requests. It never reports the number itself — that comes from
+the database afterwards, via the SQL.
 
 ---
 
@@ -210,3 +213,75 @@ Save the raw summary alongside it:
 SUMMARY_OUT=loadtest/results/2.3-naive-2026-08-20.json \
   k6 run loadtest/seat-contention.js
 ```
+
+---
+
+## `webhook-replay.js` — Phase 5.4, the idempotency test
+
+The second non-negotiable in `PLAN.md`: replaying one payment event 10,000 times
+**concurrently** must produce exactly one paid booking. Sequential replay only
+proves the constraint exists; concurrent replay proves it holds under the race
+that actually happens.
+
+```bash
+# terminal 1 — the server (BOOKING_MODE is irrelevant here; safe is the default)
+npm start
+
+# terminal 2 — the load
+k6 run loadtest/webhook-replay.js
+
+# terminal 2 — the measurement
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush -f - < loadtest/count-payment-replay.sql
+```
+
+`setup()` logs in, creates **one** booking on the first available seat of the
+show, and refuses to start unless that booking is `pending` — a booking in any
+other state would make every attempt a 409 and report zero while proving nothing.
+
+### Options
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BASE_URL` | `http://localhost:3000` | never a deployed URL |
+| `SHOW_ID` | `1` | |
+| `VUS` | `500` | how many attempts are in flight at once |
+| `ITERATIONS` | `20` | per VU; `VUS × ITERATIONS` is the attempt count |
+| `BARRIER_MS` | `3000` | holds every VU's **first** attempt until a common start |
+| `EVENT_ID` | `evt-replay-<timestamp>` | one id per run |
+| `EMAIL` / `PASSWORD` | the demo account | |
+| `SUMMARY_OUT` | unset | path for the raw JSON summary |
+
+### 10,000 attempts at a concurrency of 500 — say it that way
+
+The default workload is 500 VUs × 20 iterations. That is ten thousand attempts
+with five hundred in flight at any moment, which is what this machine can
+actually produce. It is **not** ten thousand simultaneous connections, and no
+recorded number should say that it is.
+
+`EVENT_ID` defaults to a fresh id per run for a reason: `payment_events.event_id`
+is globally unique, so re-running against a database that already holds the
+previous run's event would report 10,000 duplicates and zero creations — a run
+that passes every eye test while measuring nothing. Re-seed between recorded
+runs anyway.
+
+### Reading the output
+
+```
+  201 created          1        the one confirmation that did the work
+  200 duplicate        9999     replays, answered from the stored row
+  409 conflict         0        a second, different event on a paid booking
+  dropped_iterations   0        attempts k6 could not run — read this first
+  http_req_failed      0.00%    anything other than 200 or 201
+```
+
+Then the SQL must show **one** `payment_events` row for the event, the booking
+`paid`, and no extra `booking_seats` rows. A 200 is the correct answer to a
+replay (`PLAN.md` 5.2 fixes it there deliberately), so the script's expected
+statuses are 200 and 201.
+
+**Pool depth bounds the concurrency, not the correctness.** `server/src/db/pool.js`
+sets no `max`, so `pg` allows ten connections and the 500 in-flight requests
+queue behind them in Node. That shapes latency in the summary; it has no bearing
+on how many rows the event produced. Pool sizing is Phase 7.3b and
+approval-gated.
