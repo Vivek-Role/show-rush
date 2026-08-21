@@ -135,6 +135,18 @@
   box-shadow: inset 0 0 0 2px #f0fdf4;
 }
 
+/* Module 6.5. Selected optimistically, hold not yet confirmed. Dashed rather
+   than a different colour: the seat is genuinely selected, and the only thing
+   still open is whether the server agrees. If it does not, the seat reverts —
+   so this must not look like a settled state.
+
+   No animation. A seat that pulses for the 30 ms a local hold usually takes is
+   noise, and prefers-reduced-motion would have to be honoured for it anyway. */
+.seat[data-pending='true'] {
+  border-style: dashed;
+  box-shadow: inset 0 0 0 2px #bbf7d0;
+}
+
 /* At the six-seat ceiling an unselected seat is refused but stays focusable,
    so it is dimmed rather than removed from the keyboard's reach. */
 .seat[aria-disabled='true'] {

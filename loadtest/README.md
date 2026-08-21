@@ -11,10 +11,21 @@ next to the SQL that counts what it produced.
 | `count-double-bookings.sql` | the measurement — how many seats ended up sold twice |
 | `webhook-replay.js` | k6 script — N virtual users confirm the **same payment event** against the **same booking** (Phase 5.4) |
 | `count-payment-replay.sql` | the measurement — how many rows one replayed event produced |
+| `seat-churn.js` | k6 script — N virtual users hold and release seats to produce a sustained stream of WebSocket broadcasts (Phase 6.4) |
+| `count-reconciliation.sql` | the measurement — what the reconciliation sweep and the late-payment path did |
 | `results/` | raw k6 summaries behind each recorded number (created by Module 2.3) |
 
 A script produces requests. It never reports the number itself — that comes from
 the database afterwards, via the SQL.
+
+`seat-churn.js` is the exception that proves the rule: it is a **generator**, not
+a benchmark. It exists to load the *client*, and the number it prints is how many
+broadcasts it caused — the denominator for counters read in the browser. Nothing
+it prints is a performance figure for this system.
+
+**Disable the sweep before any Phase 2 or Phase 5 run.** Set
+`RECONCILE_INTERVAL_SECONDS=0`. A background job changing booking status
+mid-measurement measures something other than the code under test.
 
 ---
 
@@ -285,3 +296,31 @@ sets no `max`, so `pg` allows ten connections and the 500 in-flight requests
 queue behind them in Node. That shapes latency in the summary; it has no bearing
 on how many rows the event produced. Pool sizing is Phase 7.3b and
 approval-gated.
+
+---
+
+## Phase 6.4 — seat churn, and the client counters
+
+```bash
+# terminal 1 — the API
+RECONCILE_INTERVAL_SECONDS=0 npm start
+
+# terminal 2 — the client under measurement
+PROFILE=1 npm run build:client        # add VITE_SEAT_UPDATE_MODE=immediate for the "before"
+npm run preview:client                # http://localhost:4173
+
+# open http://localhost:4173/shows/20 in a VISIBLE, FOREGROUND tab, then:
+# terminal 3 — the load
+SHOW_ID=20 VUS=15 SEATS_PER_VU=2 STEP_MS=50 DURATION=20s   SUMMARY_OUT=loadtest/results/6.4-batched-$(date +%F).json k6 run loadtest/seat-churn.js
+```
+
+Read the browser-side numbers from the console:
+
+```js
+window.__srSeatUpdates   // { mode, messages, seatUpdates, flushes }
+```
+
+**The tab must be visible.** Chrome does not run `requestAnimationFrame` in a
+hidden tab, and the hook falls back to a 1 s timer there instead. The recorded
+2026-08-22 run was taken in a hidden tab and therefore measures the fallback
+clock, not rAF — see `docs/phases/phase-6-reconciliation.md` §6.

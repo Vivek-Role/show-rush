@@ -12,7 +12,13 @@ import { holdKey } from './holdService.js';
 // EXISTS rather than a join to booking_seats on purpose: until the booking
 // phase adds its unique constraint, the same seat can legitimately appear on
 // more than one booking row, and a join would emit that seat twice.
-const SEATS_FOR_SHOW = `
+// One SQL text, two shapes. The scoped variant adds a single predicate so the
+// broadcast path (Module 6.3) can ask about the seats that just changed instead
+// of re-reading a whole screen on every hold. Built from one template rather
+// than written twice: two hand-maintained copies of this query would be two
+// answers to "is this seat taken", which is the thing CLAUDE.md §10 forbids.
+function seatsForShowQuery({ scoped }) {
+  return `
   select
     se.id,
     se.row_label,
@@ -34,8 +40,24 @@ const SEATS_FOR_SHOW = `
   join seats se on se.screen_id = sh.screen_id
   left join show_prices p on p.show_id = sh.id and p.tier = se.tier
   where sh.id = $1
+    ${scoped ? 'and se.id = any($2::bigint[])' : ''}
   order by se.row_label, se.seat_number
 `;
+}
+
+const SEATS_FOR_SHOW = seatsForShowQuery({ scoped: false });
+const SEATS_FOR_SHOW_SCOPED = seatsForShowQuery({ scoped: true });
+
+function toSeats(rows) {
+  return rows.map((row) => ({
+    id: String(row.id),
+    row_label: row.row_label,
+    seat_number: row.seat_number,
+    tier: row.tier,
+    price_paise: row.price_paise,
+    status: row.status,
+  }));
+}
 
 // status is a string rather than a boolean, which is what lets 'held' join
 // 'available' and 'booked' without changing the response shape.
@@ -49,16 +71,31 @@ export async function getSeatStatus(showId, { forUserId } = {}) {
 
   const { rows } = await pool.query(SEATS_FOR_SHOW, [showId]);
 
-  const seats = rows.map((row) => ({
-    id: String(row.id),
-    row_label: row.row_label,
-    seat_number: row.seat_number,
-    tier: row.tier,
-    price_paise: row.price_paise,
-    status: row.status,
-  }));
+  return mergeHolds(showId, toSeats(rows), forUserId);
+}
 
-  return mergeHolds(showId, seats, forUserId);
+/**
+ * Module 6.3. The same answer, for named seats only.
+ *
+ * This exists so a broadcast can describe the seats that actually changed. It
+ * is the same SQL and the same hold merge as getSeatStatus — deliberately, and
+ * this is the point: the alternative was inferring status at the call site
+ * ("a hold was released, so the seat is available"), which is wrong the moment
+ * the seat is also booked.
+ *
+ * Called with no forUserId by the broadcast path, so the answer is
+ * viewer-agnostic: a hold reads 'held' to everybody, including its owner. The
+ * client is what knows its own holds, and ignores those messages.
+ */
+export async function getSeatStatusFor(showId, seatIds, { forUserId } = {}) {
+  if (!isId(showId)) return [];
+
+  const ids = [...new Set(seatIds.map(String))].filter(isId);
+  if (ids.length === 0) return [];
+
+  const { rows } = await pool.query(SEATS_FOR_SHOW_SCOPED, [showId, ids]);
+
+  return mergeHolds(showId, toSeats(rows), forUserId);
 }
 
 // One MGET over the seats Postgres just returned — a read of keys already

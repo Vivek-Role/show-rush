@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { HttpError } from '../lib/http-error.js';
 import { seatIdList, validationError } from '../lib/validate.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from '../services/availabilityService.js';
 import { getShowWithScreen, seatIdsOnScreen } from '../services/catalogService.js';
 import { acquireHolds, getHoldOwner, getHoldTtl, releaseHolds } from '../services/holdService.js';
@@ -72,6 +73,10 @@ showsRouter.post('/:id/holds', requireAuth, async (req, res) => {
     );
   }
 
+  // Module 6.3. After the hold is taken, never before, and never awaited: a
+  // socket problem must not turn a successful hold into an error.
+  void broadcastSeats(found.show.id, result.seatIds);
+
   res.status(201).json({
     hold: {
       show_id: found.show.id,
@@ -93,6 +98,11 @@ showsRouter.delete('/:id/holds', requireAuth, async (req, res) => {
     seatIds,
     userId: req.user.id,
   });
+
+  // Only what was actually released. Seats that had already expired changed
+  // nothing, and announcing them would be describing a change that never
+  // happened.
+  void broadcastSeats(found.show.id, releasedSeatIds);
 
   res.json({
     released: {

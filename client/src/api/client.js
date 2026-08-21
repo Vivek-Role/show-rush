@@ -67,3 +67,19 @@ export async function request(path, { method = 'GET', body } = {}) {
 
   return payload;
 }
+
+// Module 6.3. The seat-event socket lives on the same server as the API, so its
+// URL is derived rather than configured: a second variable could disagree with
+// the first, and a client pointed at two different backends fails in a way that
+// looks like a bug in the seat map.
+//
+// http -> ws, https -> wss. A relative VITE_API_BASE_URL is resolved against
+// the page, which is what makes this work behind a dev proxy as well as against
+// the deployed origin.
+export function seatEventsUrl(showId) {
+  const base = new URL(BASE_URL, window.location.href);
+  base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
+  base.pathname = '/ws';
+  base.search = new URLSearchParams({ show_id: String(showId) }).toString();
+  return base.toString();
+}

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { assertBookingConfig, config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { HttpError } from '../lib/http-error.js';
+import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from './availabilityService.js';
 import { getShowWithScreen, isId } from './catalogService.js';
 
@@ -271,6 +272,15 @@ export async function createBooking({ userId, showId, seatIds }) {
     seats,
     totalPaise,
   });
+
+  // Module 6.3. The seats are claimed in Postgres by now — both paths commit
+  // before returning — so what the room is told is already true. Never awaited:
+  // a booking that succeeded must not fail because a socket did.
+  //
+  // This is on the naive path too, and deliberately changes nothing about it:
+  // it runs after createBookingNaive has returned, adds no transaction, no
+  // lock and no check, and the race it is measured for is untouched.
+  void broadcastSeats(found.show.id, seatIds);
 
   // status is 'pending' and stays there: Phase 5 owns the transition to 'paid'.
   return {

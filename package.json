@@ -17,6 +17,7 @@
     "migrate": "npm run migrate --workspace server",
     "seed": "npm run seed --workspace server",
     "seed:stress": "npm run seed:stress --workspace server",
+    "reconcile": "npm run reconcile --workspace server",
     "dev:client": "npm run dev --workspace client",
     "build:client": "npm run build --workspace client",
     "preview:client": "npm run preview --workspace client"

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { isSelectable } from './seatIndex.js';
 
 // Every piece of seat-selection state lives here, and nothing about how seats
@@ -9,6 +9,17 @@ import { isSelectable } from './seatIndex.js';
 // reconciled by derivation on each render rather than by an effect that fires
 // afterwards, so a stale total never gets painted before being corrected.
 export function useSeatSelection({ seats, maxSeats = 6 }) {
+  // Module 6.5. Seats whose hold is still in flight. They are selected — the
+  // click already counted — but the server has not agreed yet, and saying so is
+  // the difference between "instant" and "dishonest".
+  const [pendingIds, setPendingIds] = useState(() => new Set());
+
+  // Module 6.5. One counter per seat, so an answer can be matched to the click
+  // that asked for it. Click, unclick, click faster than the network and three
+  // responses come back for one seat: without this, the first one's rollback
+  // undoes the third one's selection. A ref, not state — nothing renders from
+  // it, and bumping it must not cost a render.
+  const seqRef = useRef(new Map());
   // Ids only. Never an index, never row_label + seat_number: those describe
   // where a seat is drawn, and the API id is what the seat actually is.
   const [chosenIds, setChosenIds] = useState(() => new Set());
@@ -105,7 +116,62 @@ export function useSeatSelection({ seats, maxSeats = 6 }) {
     [seatById, maxSeats],
   );
 
-  const clear = useCallback(() => setChosenIds(new Set()), []);
+  const clear = useCallback(() => {
+    setChosenIds(new Set());
+    setPendingIds(new Set());
+  }, []);
 
-  return { selectedIds, isSelected, toggle, clear, count, totalPaise, breakdown, limitReached };
+  // ---------------------------------------------------------------------------
+  // Module 6.5 — the optimistic bookkeeping.
+  //
+  // The rule: a response may only act on the seat it was issued for, and only
+  // if no newer click has happened since. Everything else is ignored, which is
+  // what makes an out-of-order answer harmless rather than corrupting.
+  // ---------------------------------------------------------------------------
+
+  // Called as the click happens. Returns the ticket the response must present.
+  const beginPending = useCallback((id) => {
+    const next = (seqRef.current.get(id) ?? 0) + 1;
+    seqRef.current.set(id, next);
+
+    setPendingIds((current) => {
+      const updated = new Set(current);
+      updated.add(id);
+      return updated;
+    });
+
+    return next;
+  }, []);
+
+  // True when this response is still the newest word on that seat. A stale
+  // ticket means the user has clicked again since, and their newer intent wins.
+  const isCurrent = useCallback((id, seq) => seqRef.current.get(id) === seq, []);
+
+  const settlePending = useCallback((id, seq) => {
+    if (seq !== undefined && !isCurrent(id, seq)) return;
+
+    setPendingIds((current) => {
+      if (!current.has(id)) return current;
+      const updated = new Set(current);
+      updated.delete(id);
+      return updated;
+    });
+  }, [isCurrent]);
+
+  const isPending = useCallback((id) => pendingIds.has(id), [pendingIds]);
+
+  return {
+    selectedIds,
+    isSelected,
+    toggle,
+    clear,
+    count,
+    totalPaise,
+    breakdown,
+    limitReached,
+    beginPending,
+    settlePending,
+    isCurrent,
+    isPending,
+  };
 }

@@ -1,9 +1,11 @@
 import { config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { HttpError } from '../lib/http-error.js';
+import { broadcastSeats } from '../realtime/hub.js';
 import { releaseHolds } from './holdService.js';
 
 // Phase 5 — payment confirmation and its idempotency.
+// Phase 6.1 — and what happens when it arrives too late.
 //
 // The mock provider and the confirmation flow live in one file on purpose:
 // thirty lines of fake gateway do not earn a module boundary, and keeping them
@@ -17,6 +19,12 @@ import { releaseHolds } from './holdService.js';
 // This module adds no availability read. A booking's seats were claimed in
 // Postgres at Phase 2 time, so payment never asks whether they are free —
 // availabilityService remains the only seat-status path (CLAUDE.md §10).
+//
+// Module 6.1 keeps that true even for a booking whose seats were released. It
+// does not ask whether they are free; it tries to take them back and lets the
+// Phase 2.4 unique constraint answer. The constraint is the only participant
+// that sees every transaction, which is the same argument Phase 2 and Phase 5
+// both make.
 
 // ---------------------------------------------------------------------------
 // 5.1 — the mock provider.
@@ -79,6 +87,58 @@ const BOOKING_BY_REF = `
 // entirely — the same discipline bookingService applies on the seat path.
 const EVENT_ID_CONSTRAINT = 'payment_events_event_id_key';
 
+// Module 6.1. The constraint from migration 002 — the Phase 2.4 guarantee, and
+// the thing that decides whether a late payment can be honoured. Declared here
+// rather than imported: bookingService keeps its own copy for the same reason
+// EVENT_ID_CONSTRAINT is local, and importing it would drag the BOOKING_MODE
+// boot assertion into a module that has no opinion about it.
+const SEAT_TAKEN_CONSTRAINT = 'booking_seats_show_id_seat_id_key';
+
+// Module 6.1. The row lock that serialises a payment against the reconciliation
+// sweep. reconcileService takes FOR UPDATE SKIP LOCKED on this same row, so
+// whichever transaction commits first wins outright and the other reads the
+// committed result instead of racing it.
+const LOCK_BOOKING = `
+  select id, booking_ref, user_id, show_id, status, total_paise
+    from bookings
+   where id = $1
+     for update
+`;
+
+// Module 6.1. Put back exactly the seats the sweep archived — no more, and
+// none chosen here. Ordered by seat_id for the same reason bookingService sorts
+// its inserts: two transactions claiming overlapping seats take the index
+// entries in the same sequence and queue instead of deadlocking.
+//
+// This is the only read of released_booking_seats in the application, and it is
+// keyed by booking. The table is an audit record; it never answers "is this
+// seat free" — availabilityService does, and only availabilityService.
+const RECLAIM_SEATS = `
+  insert into booking_seats (booking_id, show_id, seat_id)
+  select booking_id, show_id, seat_id
+    from released_booking_seats
+   where booking_id = $1
+   order by seat_id
+  returning seat_id
+`;
+
+// The expected status is a parameter, so the same guard covers both the
+// ordinary 'pending' transition and 6.1's 'cancelled' one. Either way the
+// UPDATE refuses to move a booking that changed underneath it.
+const MARK_PAID = `
+  update bookings
+     set status = 'paid', updated_at = now()
+   where id = $1 and status = $2
+  returning id, booking_ref, user_id, show_id, status, total_paise
+`;
+
+const MARK_REFUND_PENDING = `
+  update bookings
+     set status = 'refund_pending', updated_at = now()
+   where id = $1 and status = 'cancelled'
+  returning id, booking_ref, user_id, show_id, status, total_paise
+`;
+
 function bookingPayload(row) {
   return {
     booking_ref: row.booking_ref,
@@ -121,12 +181,65 @@ async function storedEvent(eventId) {
 }
 
 /**
+ * Module 6.1. A payment landing on a booking the sweep already cancelled.
+ *
+ * PLAN.md 6.1: seat still free, honour it; seat taken, refund_pending. Here
+ * "still free" is not a question asked of availabilityService — it is answered
+ * by trying to take the seats back and letting the Phase 2.4 constraint decide,
+ * exactly as an ordinary booking does. An availability read would be a guess
+ * that another transaction could invalidate between the read and the write.
+ *
+ * The savepoint is load-bearing: a 23505 aborts the whole transaction unless it
+ * is rolled back to one, and this transaction still has to record the event and
+ * write refund_pending after the seats are lost.
+ */
+async function reclaimCancelledBooking(client, booking) {
+  await client.query('savepoint reclaim');
+
+  let claimed = 0;
+
+  try {
+    const result = await client.query(RECLAIM_SEATS, [booking.id]);
+    claimed = result.rowCount;
+    await client.query('release savepoint reclaim');
+  } catch (err) {
+    if (err.code !== '23505' || err.constraint !== SEAT_TAKEN_CONSTRAINT) throw err;
+
+    // Somebody else booked at least one of these seats while this booking was
+    // expired. All-or-nothing: a booking holding half its seats is worse than
+    // one holding none, and the payer is owed a refund either way.
+    await client.query('rollback to savepoint reclaim');
+    claimed = 0;
+  }
+
+  if (claimed > 0) {
+    const paid = await client.query(MARK_PAID, [booking.id, 'cancelled']);
+    return paid.rows[0] ?? null;
+  }
+
+  // Reached two ways: the seats were taken, or the archive held nothing to
+  // reclaim. The second should be unreachable — every booking has seats — so it
+  // is logged rather than silently treated as the ordinary case.
+  if (claimed === 0) {
+    const refund = await client.query(MARK_REFUND_PENDING, [booking.id]);
+    return refund.rows[0] ?? null;
+  }
+
+  return null;
+}
+
+/**
  * One transaction: record the event, and — only for a successful charge — move
- * the booking to paid.
+ * the booking on.
  *
  * The INSERT is the check. There is no SELECT beforehand asking whether this
  * event has been seen: that is the Phase 2.1 race with a different table name.
  * The unique constraint is the guarantee, exactly as it is for seats.
+ *
+ * Module 6.1 adds one branch. A 'pending' booking becomes paid, as before. A
+ * 'cancelled' one — the sweep got there first — is re-claimed if its seats are
+ * still free and marked refund_pending if they are not. 'paid' and
+ * 'refund_pending' still conflict, unchanged.
  */
 async function recordPayment({ booking, eventId, outcome }) {
   const client = await pool.connect();
@@ -135,6 +248,13 @@ async function recordPayment({ booking, eventId, outcome }) {
   try {
     await client.query('begin');
 
+    // Module 6.1. Taken before the event is written, so the sweep cannot cancel
+    // this booking halfway through paying for it. The status read here is the
+    // one the branch below trusts — the one from confirmPayment's opening
+    // SELECT was taken outside any transaction and may already be stale.
+    const locked = await client.query(LOCK_BOOKING, [booking.id]);
+    const current = locked.rows[0] ?? booking;
+
     const inserted = await client.query(
       `insert into payment_events (event_id, booking_id, status, amount_paise)
        values ($1, $2, $3, $4)
@@ -142,22 +262,24 @@ async function recordPayment({ booking, eventId, outcome }) {
       [eventId, booking.id, outcome, booking.total_paise],
     );
 
-    let bookingRow = booking;
+    let bookingRow = current;
 
     if (outcome === 'succeeded') {
       // The second guard, and the reason the status transition is idempotent
       // even if the event check were bypassed: a booking already paid by some
-      // other event, or cancelled, updates nothing.
-      const updated = await client.query(
-        `update bookings
-            set status = 'paid', updated_at = now()
-          where id = $1 and status = 'pending'
-          returning id, booking_ref, user_id, show_id, status, total_paise`,
-        [booking.id],
-      );
-
-      if (updated.rowCount === 0) conflict = true;
-      else bookingRow = updated.rows[0];
+      // other event updates nothing.
+      if (current.status === 'pending') {
+        const updated = await client.query(MARK_PAID, [booking.id, 'pending']);
+        if (updated.rowCount === 0) conflict = true;
+        else bookingRow = updated.rows[0];
+      } else if (current.status === 'cancelled') {
+        const settled = await reclaimCancelledBooking(client, booking);
+        if (!settled) conflict = true;
+        else bookingRow = settled;
+      } else {
+        // paid, refund_pending — unchanged from Phase 5.
+        conflict = true;
+      }
     }
 
     // Rolling back a conflict is what keeps a rejected event out of
@@ -223,24 +345,35 @@ function replayAnswer(stored, booking) {
  * expired — or that the client released when the booking was created back in
  * Phase 4 — is a no-op rather than a failure. Redis being down makes
  * holdService throw 503; that is swallowed here and the hold expires at its TTL.
+ *
+ * Returns this booking's seat ids so Module 6.3 can announce them. They are
+ * read from booking_seats either way — the seats the booking actually holds,
+ * not the ones the request mentioned.
  */
 async function releaseBookingHolds(booking, userId) {
+  let seatIds = [];
+
   try {
     const { rows } = await pool.query(
       'select seat_id from booking_seats where booking_id = $1',
       [booking.id],
     );
 
-    if (rows.length === 0) return;
+    seatIds = rows.map((row) => String(row.seat_id));
+    if (seatIds.length === 0) return seatIds;
 
     await releaseHolds({
       showId: String(booking.show_id),
-      seatIds: rows.map((row) => String(row.seat_id)),
+      seatIds,
       userId,
     });
   } catch (err) {
     console.error(`hold release after payment failed for booking ${booking.booking_ref}`, err);
   }
+
+  // Returned even when the release failed: the seats are sold, the map should
+  // say so, and a Redis problem is not a reason to withhold that.
+  return seatIds;
 }
 
 export async function confirmPayment({ userId, bookingRef, eventId, simulate }) {
@@ -288,8 +421,20 @@ export async function confirmPayment({ userId, bookingRef, eventId, simulate }) 
   }
 
   // Committed. Only now, and never before.
-  if (result.event.status === 'succeeded') {
-    await releaseBookingHolds(booking, userId);
+  //
+  // Module 6.1: a refund_pending booking owns no seats — the sweep released
+  // them and somebody else took them — so there is nothing of its own to
+  // release. Checking the booking rather than the event says that out loud;
+  // releaseBookingHolds would find no rows and return either way.
+  if (result.event.status === 'succeeded' && result.booking.status === 'paid') {
+    const seatIds = await releaseBookingHolds(result.booking, userId);
+
+    // Module 6.3. After the commit and after the hold release, so what the room
+    // is told is the settled state and not a seat momentarily both held and
+    // booked. Usually a no-op on the map — the seats have read 'booked' since
+    // the booking was created — but for a Module 6.1 re-claim they went from
+    // available back to booked, and that is a real change.
+    void broadcastSeats(result.booking.show_id, seatIds);
   }
 
   return {

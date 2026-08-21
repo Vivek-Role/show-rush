@@ -9,6 +9,7 @@ import { BookingSummary } from '../booking/BookingSummary.jsx';
 import { Legend } from '../seatmap/Legend.jsx';
 import { SeatMap } from '../seatmap/SeatMap.jsx';
 import { buildSeatIndex } from '../seatmap/seatIndex.js';
+import { useSeatEvents } from '../seatmap/useSeatEvents.js';
 import { useSeatHolds } from '../seatmap/useSeatHolds.js';
 import { useSeatSelection } from '../seatmap/useSeatSelection.js';
 
@@ -90,6 +91,7 @@ export function SeatMapPage() {
   // down; nothing below holds a selection of its own.
   const selection = useSeatSelection({ seats, maxSeats: MAX_SEATS });
   const { toggle, selectedIds, isSelected, limitReached, clear } = selection;
+  const { beginPending, settlePending, isCurrent } = selection;
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedSeats = useMemo(
@@ -108,6 +110,50 @@ export function SeatMapPage() {
   const holds = useSeatHolds({ showId: id, enabled: Boolean(user), onExpire: onHoldExpired });
   const { hold, release, releaseAll, restore } = holds;
 
+  // Module 6.3. A broadcast is viewer-agnostic — the server tells the whole
+  // room a seat is 'held' without saying whose hold it is — so this is where
+  // the viewer's own holds are read back in. Held by us is still ours to book.
+  const heldRef = useRef(new Set());
+  heldRef.current = new Set(holds.heldIds);
+
+  // Module 6.4. One patch per animation frame arrives here, already coalesced
+  // by seat id. Returning the same object when nothing actually changed is what
+  // keeps a flush of no-ops from costing a render — the seat map re-renders
+  // because a seat changed, not because a message arrived.
+  const applySeatUpdates = useCallback((batch) => {
+    setData((current) => {
+      if (!current) return current;
+
+      let changed = false;
+
+      const next = current.seats.map((seat) => {
+        if (!batch.has(seat.id)) return seat;
+
+        let status = batch.get(seat.id);
+        if (status === 'held' && heldRef.current.has(seat.id)) status = 'available';
+        if (status === seat.status) return seat;
+
+        changed = true;
+        return { ...seat, status };
+      });
+
+      return changed ? { ...current, seats: next } : current;
+    });
+  }, []);
+
+  // A socket that was down missed events, and a missed event is invisible.
+  // Re-reading the map is the only honest recovery.
+  const onSocketResync = useCallback(() => {
+    void load({ silent: true });
+  }, [load]);
+
+  useSeatEvents({
+    showId: id,
+    enabled: Boolean(id),
+    onSeats: applySeatUpdates,
+    onResync: onSocketResync,
+  });
+
   // Selecting a seat is what takes the hold, which is what makes two tabs
   // unable to hold the same seat. Signed out there is no hold to take — the
   // selection still works, and the server refuses the booking anyway.
@@ -119,15 +165,29 @@ export function SeatMapPage() {
       // about to refuse would take a seat nobody gets to use.
       if (!wasSelected && limitReached) return;
 
+      // Module 6.5. The click lands now; the server catches up. Everything
+      // between here and the answer is optimistic, and the seat says so.
       toggle(seatId);
       if (!user) return;
 
+      const seq = beginPending(seatId);
+
       if (wasSelected) {
-        void release([seatId]);
+        // Releasing cannot be refused in a way the user can act on, so it is
+        // not awaited — but it is still sequenced, so a release answering after
+        // a re-select cannot clear the newer request's pending state.
+        void release([seatId]).finally(() => settlePending(seatId, seq));
         return;
       }
 
       const result = await hold([seatId]);
+
+      // A newer click on this same seat has already superseded this request.
+      // Its answer owns the seat now; this one must not touch it, or a rollback
+      // for a click the user has since undone would undo the one they meant.
+      if (!isCurrent(seatId, seq)) return;
+
+      settlePending(seatId, seq);
       if (result.ok) return;
 
       // Put the seat back the way it was. The selection is local, the hold is
@@ -136,7 +196,18 @@ export function SeatMapPage() {
       setBookingError(result.message);
       await load({ silent: true });
     },
-    [isSelected, limitReached, toggle, user, hold, release, load],
+    [
+      isSelected,
+      limitReached,
+      toggle,
+      user,
+      hold,
+      release,
+      load,
+      beginPending,
+      settlePending,
+      isCurrent,
+    ],
   );
 
   // After a refresh the seat ids come from sessionStorage and their validity
@@ -306,6 +377,7 @@ export function SeatMapPage() {
         layout={data.screen.layout}
         seatAt={index.seatAt}
         isSelected={selection.isSelected}
+        isPending={selection.isPending}
         onToggle={onSeatToggle}
         limitReached={selection.limitReached}
       />

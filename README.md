@@ -146,6 +146,18 @@ npm start
 
 Then `curl localhost:3000/health` — expect `{"status":"ok","db":"ok","redis":"ok"}`.
 
+Two variables control the Phase 6 reconciliation sweep, both with working
+defaults in `.env.example`:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PENDING_BOOKING_TTL_SECONDS` | `900` | how long a booking may sit `pending` before the sweep cancels it and returns its seats. Must exceed the 420 s hold TTL, or the server refuses to start |
+| `RECONCILE_INTERVAL_SECONDS` | `60` | how often the in-process sweep runs. **`0` disables it** and leaves `npm run reconcile` working — set that before any benchmark, so a background job cannot change booking status mid-measurement |
+
+```bash
+npm run reconcile    # run one sweep now, and exit
+```
+
 ### The client
 
 ```bash
@@ -258,6 +270,18 @@ have to know which layer caught it.
   `002_unique_booking_seats.sql`. The availability check in front of it is
   convenience; the database is the only participant that sees every transaction,
   so it is the only one that can decide.
+- **Live seat updates are one WebSocket room per show**, `GET /ws?show_id=<id>`,
+  server-to-client only. What travels on it comes from `availabilityService` —
+  the same single query path — never inferred from the action that triggered it,
+  because "a hold was released, so the seat is free" is wrong the moment the seat
+  is also booked. Rooms are public to anyone with the show id, matching the
+  already-public seat map. Single instance: a second process would broadcast only
+  to its own sockets.
+- **Expiring a booking deletes its seat rows, it does not only change a status.**
+  `UNIQUE (show_id, seat_id)` has no predicate, so a `cancelled` booking that
+  kept its rows would leave a seat that reads `available` and still 409s. The
+  rows are archived to `released_booking_seats` first, which is also the list a
+  late payment re-claims from.
 - **The racy path is kept on purpose.** `BOOKING_MODE=naive` is the
   check-then-insert version the constraint replaced. It stays in the codebase
   permanently, because without it the before-number above could never be
@@ -461,11 +485,49 @@ figure.
 
 </details>
 
+### Live seat updates — batched vs un-batched
+
+Under a sustained broadcast stream, buffering incoming seat updates and applying
+them in one flush instead of one-per-message. Both paths ship permanently behind
+`VITE_SEAT_UPDATE_MODE`, for the same reason `BOOKING_MODE=naive` survives: a
+before-number that cannot be re-run is a claim, not a measurement.
+
+> **Read this before quoting the numbers.** The recorded run was taken in a
+> browser tab that stayed **hidden**, and Chrome does not run
+> `requestAnimationFrame` in a hidden tab. The flush clock exercised here was the
+> hook's **1 s hidden-tab fallback**, not rAF. **These are not rAF numbers**, and
+> no rAF figure is estimated anywhere in this repository — the visible-tab
+> measurement is still owed. `loadtest/README.md` has the exact commands.
+
+| Metric (per run) | `immediate` | `batched` |
+|---|---|---|
+| messages received | 4,802 | 4,624 |
+| seat updates carried | 9,604 | 9,248 |
+| **state flushes** | **4,802** | **11** |
+| DOM mutation callbacks | 4,226 | 11 |
+| DOM `data-status` writes | 9,604 | 176 |
+
+The two runs produced slightly different loads, so the comparison that matters is
+per message: **1,000 flushes per 1,000 messages un-batched, against 2.4 per
+1,000 batched.** Attribute writes fell 55×, because coalescing by seat id
+collapses repeated changes to the same seat.
+
+**Method.** 15 VUs × 2 seats, hold → 50 ms → release → 50 ms, 20 s, against a
+84-seat show, one tab watching. `loadtest/seat-churn.js`, k6 v2.2.0, Node
+v22.23.2, Postgres 17.11 and Redis 7.4.10 in Docker, WSL2 on 4 cores. Browser
+counters from `window.__srSeatUpdates`; DOM writes from a `MutationObserver`
+filtered to `data-status`. Raw summaries in `loadtest/results/6.4-*.json`. React
+DevTools re-render counts were **not** collected — the profiling build was
+served, but the extension could not be driven from that harness.
+
+Full method and limits:
+[`docs/phases/phase-6-reconciliation.md`](docs/phases/phase-6-reconciliation.md) §6.
+
 ### Everything else
 
-**Not measured.** Hold throughput, availability-query latency and WebSocket
-behaviour arrive in Phase 7, each with the command, environment and workload
-used to produce it.
+**Not measured.** Hold throughput, availability-query latency, WebSocket memory
+growth under load, and the cost of the per-change broadcast query arrive in
+Phase 7, each with the command, environment and workload used to produce it.
 
 The cold-start figure above is a deployment characteristic, not a performance
 benchmark of the system.
