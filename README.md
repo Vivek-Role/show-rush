@@ -523,11 +523,61 @@ served, but the extension could not be driven from that harness.
 Full method and limits:
 [`docs/phases/phase-6-reconciliation.md`](docs/phases/phase-6-reconciliation.md) §6.
 
-### Everything else
+### Phase 7 results table
 
-**Not measured.** Hold throughput, availability-query latency, WebSocket memory
-growth under load, and the cost of the per-change broadcast query arrive in
-Phase 7, each with the command, environment and workload used to produce it.
+Measured 2026-08-22 on the Phase 7 commit, against the local `docker compose`
+stack, always with `RECONCILE_INTERVAL_SECONDS=0`. Machine: WSL2, **4 cores**,
+Node v22.23.2, k6 v2.2.0, Postgres 17.11, Redis 7.4.10, single Node instance,
+`pg` pool at its default of 10.
+
+**Only the first row is a genuine before/after produced by a change to this
+system.** Everything else is a single-point measurement and says so.
+
+| Metric | Before | After | Workload | Script |
+|---|---|---|---|---|
+| **Seats sold twice** | **379 · 305 · 379** | **0 · 0 · 0** | 500 VUs, one seat, 3 runs each, re-seeded between | `seat-contention.js` |
+| **Bookings from one replayed event** | *single-point* | **1** of 10,000 attempts | 500 VUs × 20 iters, concurrency 500 | `webhook-replay.js` |
+| **Hold throughput** | *single-point* | **605/s** @ 50 VUs · **591/s** @ 200 VUs | uncontended, disjoint slices, 60 s | `hold-throughput.js` |
+| **Availability latency — 160 seats** | *single-point* | **7.5 ms avg · 9.4 p95** | anonymous, 50/s for 60 s | `availability-latency.js` |
+| **Availability latency — 5,000 seats** | *single-point* | **18.5 ms avg · 24.1 p95** | anonymous, 50/s for 60 s | `availability-latency.js` |
+| **Cost of one WebSocket watcher** | **499/s** (none) | **373/s** (1) · **238/s** (50) | same hold workload, watchers varied | `hold-throughput.js` + `ws-fanout.js` |
+| **WebSocket memory, 100→1000 sockets** | *single-point* | **no growth observed** — RSS settles ~96 MB, flat to +180 s | RSS from `/proc/<pid>/status` | `ws-fanout.js` |
+
+Three results worth stating plainly:
+
+- **Throughput is flat from 50 to 200 VUs while latency quadruples.** That is a
+  queue, not headroom — the `pg` pool is pinned at its default of 10 connections
+  while Postgres itself allows 100. Reported, deliberately not changed:
+  pool sizing is architecture and is approval-gated.
+- **31× the seats costs only ~2.5× the latency.** The availability query and its
+  Redis `MGET` scale well in seat count.
+- **One connected watcher costs a quarter of hold throughput** (499 → 373/s).
+  The per-change broadcast is a scoped query plus an `MGET`, paid once per seat
+  change no matter how many people are watching. The hub's early return when
+  nobody is watching is doing real work.
+
+These re-runs are **separate** from the 2026-08-19 numbers above: different
+commit, before migrations `003`/`004`, before the reconciliation sweep and the
+broadcast-on-booking existed. Two independent measurements of the same property,
+never merged into one range.
+
+Full method, the discarded runs, and the 7.3a findings:
+[`docs/phases/phase-7-benchmarks.md`](docs/phases/phase-7-benchmarks.md).
+
+### Still not measured
+
+- **The `requestAnimationFrame` flush ratio.** Phase 7 re-ran both halves in a
+  confirmed-visible foreground tab and **every broadcast was received** — 4,978
+  and 4,772, zero loss — but the tab's rAF cadence measured **24.1 Hz idle**
+  against a 59 Hz panel, and the flush count implies far lower still under load.
+  At display rate the ratio would be roughly 4:1; at the observed cadence it
+  computes to ~380:1. Those cannot both be true, so **no ratio is published**.
+  `document.visibilityState === "visible"` is not sufficient — Chrome throttles
+  rAF for an occluded window while still reporting the tab visible.
+  [`docs/phases/phase-7-benchmarks.md`](docs/phases/phase-7-benchmarks.md) §5.
+- **The authenticated availability path.** All latency figures are anonymous;
+  a signed-in viewer gets a different merge.
+- **Anything multi-instance.** Single Node process throughout.
 
 The cold-start figure above is a deployment characteristic, not a performance
 benchmark of the system.
