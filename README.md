@@ -3,14 +3,19 @@
 Concurrent seat reservation system — the booking path for a cinema, built to be
 correct under contention rather than merely functional.
 
-**Status:** Phase 3 (Seat map UI) complete on `feat/seat-map` — a React client
-that browses shows, renders the seat map, selects up to six seats and books them
-through the Phase 2 endpoint, with a recorded rendering baseline below. Phase 2's
-before/after concurrency numbers are below too. Seat holds arrive in Phase 4 and
-payment in Phase 5, so a booking is created and stays `pending`.
+**Status:** Phases 0–7 complete on `feat/benchmarks`. Browse movies and shows,
+open a seat map, hold up to six seats in Redis for seven minutes, book them
+behind a unique constraint that makes a seat sell exactly once, pay through a
+mock provider whose idempotency layer survives 10,000 concurrent replays of one
+event, watch other people's seats change live over a WebSocket, and have a
+reconciliation sweep clean up what nobody finished. Every measured number below
+carries the command, machine and commit that produced it.
 
-The API is deployed; **the client is not deployed yet** — it is a separate
-Render static site, authorized separately.
+**What is deployed is not this.** `main` and `origin/main` are still at the
+Phase 2 merge (`692ffcf`); Phases 3–7 are nine unmerged commits on
+`feat/benchmarks`. The deployed API therefore serves the Phase 2 codebase — no
+holds, no payments, no live updates — and **the React client is not deployed at
+all**. Merging and deploying are separate decisions that have not been taken.
 
 ## Demo
 
@@ -23,7 +28,12 @@ demo@show-rush.dev
 demo-password
 ```
 
-Try it:
+**What that link actually serves.** It runs `main`, which is the Phase 2
+codebase. The four endpoints below are all of it. Holds (Phase 4), payments
+(Phase 5), the reconciliation sweep and the WebSocket (Phase 6) and the React
+client (Phase 3) are **not deployed** — they exist only on `feat/benchmarks`.
+To see the whole system, run it locally as described under
+[Local setup](#local-setup).
 
 ```bash
 curl https://show-rush.onrender.com/health
@@ -32,6 +42,10 @@ curl https://show-rush.onrender.com/api/movies/1/shows
 curl https://show-rush.onrender.com/api/shows/1/seatmap
 ```
 
+The link and the credentials above were last exercised on **2026-08-18**, when
+the cold-start figure below was measured. They have not been re-tested since,
+and nothing in Phase 8 re-tested them.
+
 **Cold start: 23.2–27.0 seconds.** The free tier sleeps after ~15 minutes idle,
 so the first request after a quiet period is slow. Subsequent requests are
 sub-second.
@@ -39,7 +53,7 @@ sub-second.
 This is a **deployment characteristic of the free tier, not a performance
 benchmark of the system.** It measures how long Render takes to wake a sleeping
 container, and says nothing about how the booking path behaves under load.
-Those numbers arrive in Phase 2 and Phase 7.
+Those numbers are in [Benchmarks](#benchmarks) below.
 
 <details>
 <summary>How the cold start was measured</summary>
@@ -62,6 +76,39 @@ Singapore. Wall-clock from a residential connection in India, so it includes
 network latency as well as container spin-up — the two are not separated here.
 
 </details>
+
+## Architecture
+
+```mermaid
+flowchart LR
+    B["React client<br/>Vite"]
+    subgraph N["Node — single process"]
+        API["Express API<br/>routes and services"]
+        WS["WebSocket hub<br/>one room per show"]
+        SW["reconcile sweep<br/>in-process interval"]
+    end
+    AV["availabilityService<br/>the only seat-status answer"]
+    PG[("PostgreSQL 17<br/>UNIQUE show_id, seat_id<br/>payment_events.event_id")]
+    RD[("Redis 7<br/>hold key per seat<br/>SET NX EX 420")]
+
+    B -- "REST, session cookie" --> API
+    WS -- "seat status frames" --> B
+    API --> AV
+    SW --> AV
+    AV -- "booked?" --> PG
+    AV -- "held?" --> RD
+    API -- "bookings, payments" --> PG
+    API -- "holds" --> RD
+    API -- "after the write" --> WS
+    WS --> AV
+```
+
+Read it in one sentence: **Postgres is the guarantee, Redis is the
+optimisation, and `availabilityService` is the only code that merges the two.**
+A hold stops two people spending seven minutes on the same seat; it is the
+`UNIQUE (show_id, seat_id)` constraint, not the hold, that makes a seat sell
+exactly once. Everything the WebSocket says comes from that same merge — never
+inferred from whichever action triggered the broadcast.
 
 ## Prerequisites
 
@@ -235,9 +282,16 @@ All public — browsing does not require an account.
 
 Unknown or malformed ids return `404 NOT_FOUND`.
 
-Each seat is `{id, row_label, seat_number, tier, price_paise, status}`. `status`
-is `"available"` or `"booked"` today; Phase 4 adds `"held"` without changing the
-shape. Prices are integer paise, never floats.
+Each seat is `{id, row_label, seat_number, tier, price_paise, status}`, where
+`status` is `"available"`, `"held"` or `"booked"`. Prices are integer paise,
+never floats.
+
+**This route is viewer-aware.** `optionalAuth` means a signed-in caller's own
+holds are reported back to them as `"available"` — a hold exists so its owner
+can go on to book those seats, and reporting it to them as unavailable would
+block the very thing it was taken for. Everyone else, including anonymous
+callers, sees `"held"`. The WebSocket broadcast is deliberately *not*
+viewer-aware; see [Live updates](#live-updates) for what that costs.
 
 `screen.layout` is presentation data — rows, columns, tiers, aisle positions.
 **The `seats` table is the authority on which seats exist**; the layout only
@@ -251,12 +305,88 @@ describes how to draw them.
 
 Up to **6 seats** per booking, enforced server-side. All-or-nothing: if any seat
 is taken, the whole request is refused and nothing is written. The booking is
-returned as `{booking_ref, show_id, status, total_paise, seats}` with `status`
-always `"pending"` — Phase 5 owns payment.
+returned as `{booking_ref, show_id, status, total_paise, seats}`. A new booking
+is `"pending"`; `POST /api/payments/confirm` is what makes it `"paid"`, and the
+reconciliation sweep is what cancels it if nobody does.
+
+A seat held by *somebody else* is not available to book; a seat the caller holds
+themselves is, which is what a hold is for.
 
 `409 SEATS_UNAVAILABLE` is the same code whether the seat was already gone when
 the request arrived or was lost in a race at commit time. A client should not
 have to know which layer caught it.
+
+### Holds
+
+A hold is one Redis key per seat, `hold:<show>:<seat>`, taken with
+`SET NX EX 420` and released with a compare-and-delete Lua script so a client
+can never delete a stranger's hold. Multi-seat holds are all-or-nothing and are
+acquired in sorted seat order; rollback of a partial failure is best-effort, and
+anything it misses expires at the TTL.
+
+| Method | Path | Body / auth | Success | Errors |
+|---|---|---|---|---|
+| `POST` | `/api/shows/:id/holds` | `{seat_ids}` · auth | `201 {hold: {show_id, seat_ids, ttl_seconds}}` | `409 SEATS_HELD`, `503 HOLDS_UNAVAILABLE`, `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
+| `DELETE` | `/api/shows/:id/holds` | `{seat_ids}` · auth | `200 {released: {show_id, seat_ids}}` | `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
+| `GET` | `/api/shows/:id/holds/ttl?seat_ids=1,2` | auth | `200 {holds: [{seat_id, ttl_seconds}]}` | `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
+
+`ttl_seconds` is **420** — seven minutes. The countdown in the client is seeded
+from this number and never from `Date.now()`.
+
+`409 SEATS_HELD` is deliberately not `SEATS_UNAVAILABLE`: a held seat is
+somebody else's seven-minute window, not a sold seat, and a client can sensibly
+tell one user to try again shortly and the other not to bother. `DELETE` never
+errors on a hold that has already expired — nothing to release is an ordinary
+outcome, not a failure.
+
+**Redis down means holds fail closed** with `503 HOLDS_UNAVAILABLE`. Bookings
+keep working, because the constraint — not the hold — is the guarantee. Measured
+in Phase 6 §7, not assumed.
+
+### Payments
+
+A mock provider, called by the payer's own session rather than by a provider
+webhook. A real gateway is `BACKLOG.md` P1; the idempotency layer underneath is
+indifferent to which of the two calls it, which is the point of testing it now.
+
+| Method | Path | Body / auth | Success | Errors |
+|---|---|---|---|---|
+| `POST` | `/api/payments/confirm` | `{booking_ref, payment_event_id, simulate?}` · auth | `201 {payment, booking}` first time · `200` for a replay | `402 PAYMENT_FAILED`, `409 BOOKING_NOT_PENDING`, `409 EVENT_ALREADY_USED`, `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
+
+`payment_events.event_id` is unique, and that constraint — not application
+logic — is what makes a replay a no-op. **A duplicate is `200` with the original
+booking, never a `409`**, and it performs zero side effects: no charge, no
+`UPDATE`, no Redis call. The same event id used against a *different* booking is
+`409 EVENT_ALREADY_USED`, because returning the stored answer would disclose
+another booking's reference and total.
+
+**Postgres commits first; the Redis hold is released after.** Releasing inside
+the transaction would be a correctness bug: a rollback would free the seat while
+the payment succeeded. A hold outliving its booking is harmless — the seat is
+already sold.
+
+`simulate: {outcome, delay_ms}` drives the mock's success, failure and delay. It
+is refused outright in production.
+
+**Late payments resolve in both directions.** If the hold expired and the sweep
+cancelled the booking, a payment arriving afterwards is honoured when the seats
+are still free, and recorded as `refund_pending` when they are not — one code
+path, no new error code, and no double-sell either way.
+
+### Live updates
+
+`GET /ws?show_id=<id>` — a WebSocket upgrade, **server to client only**.
+
+One room per show. The socket accepts no client frames at all: the show is fixed
+at upgrade time from the query string, so there is nothing for a connected
+socket to ask for. Rooms are public to anyone holding the show id, matching the
+already-public seat map. Frames are `{type: "seats", show_id, seats: [{id,
+status}], at}`, and a `hello` frame carries the heartbeat interval.
+
+**Broadcasts are viewer-agnostic**: a hold reads `"held"` to everybody,
+including the person who took it, and the client is what knows its own holds and
+ignores those messages. That single design decision is the whole of finding
+**F-1** under [Known limitations](#known-limitations).
 
 ## Architecture notes
 
@@ -264,8 +394,9 @@ have to know which layer caught it.
   transaction and the constraint-violation catch — the exact mechanism an ORM
   would hide.
 - **`availabilityService` is the only code that answers "is this seat taken".**
-  One query path. Phase 4 extends it with Redis holds rather than adding a
-  second.
+  One query path: booked in Postgres, unioned with held in Redis by a single
+  `MGET` over the seats Postgres just returned. `holdService` owns holds; it
+  deliberately exposes no availability read of its own.
 - **`UNIQUE (show_id, seat_id)` on `booking_seats` is the guarantee**, added by
   `002_unique_booking_seats.sql`. The availability check in front of it is
   convenience; the database is the only participant that sees every transaction,
@@ -520,6 +651,17 @@ filtered to `data-status`. Raw summaries in `loadtest/results/6.4-*.json`. React
 DevTools re-render counts were **not** collected — the profiling build was
 served, but the extension could not be driven from that harness.
 
+**Phase 7 re-ran both halves in a foreground tab, and the result is parked.**
+Message delivery was perfect on both sides — 4,978 broadcasts emitted and 4,978
+received un-batched, 4,772 and 4,772 batched, **zero loss either way** — and
+`immediate` again performed exactly one flush per message. `batched` produced
+**14** flushes for those 4,772 messages. What could *not* be established is the
+rAF cadence those 14 flushes were taken against: the tab measured **24.1 Hz
+idle** against a 59 Hz panel, so the flush count is **not** reported as a
+display-rate result, and **no ratio is published anywhere in this repository**.
+Raw summaries: `loadtest/results/6.4-{immediate,batched}-visible-2026-08-22.json`.
+See [Still not measured](#still-not-measured).
+
 Full method and limits:
 [`docs/phases/phase-6-reconciliation.md`](docs/phases/phase-6-reconciliation.md) §6.
 
@@ -584,8 +726,24 @@ benchmark of the system.
 
 ## Known limitations
 
-- No seat holds yet — Phase 4. A seat is free until someone books it.
-- No payment, so every booking stays `pending` forever — Phase 5.
+- **Only the Phase 2 codebase is deployed.** `main` is at `692ffcf`; Phases 3–7
+  are unmerged, and the client is not deployed at all. The demo link serves the
+  four catalogue endpoints and nothing else.
+- **F-1 — a seat you hold from another client renders as taken until you
+  refresh.** The server broadcasts every hold as `held` to the whole room, while
+  the seat map reports a hold back to its *owner* as `available`. The client's
+  compensating guard knows only the holds **this tab** took, so a hold owned by
+  your account but taken elsewhere — a second tab, another device — renders dark
+  and disabled, and turns green again on reload. Reproduced deterministically in
+  Phase 8; low severity, self-correcting, and the owner can still re-take the
+  seat, because a same-owner re-acquire refreshes the key rather than refusing
+  it. The Phase 6/7 sightings of this were **a test-methodology artifact**: the
+  load generator authenticated as the same account the browser was signed in as.
+  It is **not** the WebSocket/HTTP race originally proposed — that hypothesis was
+  tested and disproved, 0 of 25 frames arriving before their HTTP response.
+- **The `pg` pool is pinned at its default of 10 connections**, and Phase 7
+  measured it as the binding constraint. Reported and deliberately not changed:
+  pool sizing is architecture and is approval-gated.
 - No endpoint returns a user's bookings; a booking is visible only through the
   seat map.
 - No cancellation, and no rate limiting on booking creation.
@@ -602,7 +760,15 @@ benchmark of the system.
   folding together.
 - The seat map is a plain DOM grid — one click re-renders all 5,000 seats on the
   stress dataset. Measured, not guessed; the canvas rewrite is `BACKLOG.md` P1.
-- Single instance, free tier. Benchmarks will be run locally, not on this host.
+- **Single instance.** Holds and bookings are correct, but WebSocket updates do
+  not fan out across processes — a second Node instance would broadcast only to
+  its own sockets. Redis pub/sub fan-out is `BACKLOG.md` P2.
+- **Benchmarks were measured locally** against the `docker compose` Postgres and
+  Redis, never against the free-tier deploy, which would measure its throttling
+  instead. The before/after ratio is the meaningful part; absolute numbers would
+  differ on other hardware.
+- **No CI.** Deliberately skipped in the eight-day build and recorded in
+  `BACKLOG.md` P2 rather than left silent; verification was run per module.
 
 ## Documentation
 
