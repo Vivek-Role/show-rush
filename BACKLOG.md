@@ -19,7 +19,10 @@ Small, cheap, and their absence looks careless.
       cold-start path; if it takes 40s, note it in the README.
 - [ ] **Seeded demo data.** A recruiter opening an empty app sees a broken app.
       Ship with movies, shows, and a partially-booked seat map.
-- [ ] **Demo account credentials in the README.** Don't make anyone register.
+- [x] **Demo account credentials in the README.** Don't make anyone register.
+      Present near the top of the README, with the caveat that the link and
+      credentials were last exercised on 2026-08-18 against the deployed Phase 2
+      build — the credentials are documented, the deployment is not re-verified.
 - [x] **README benchmark table filled with YOUR measured numbers.** Done in
       Phase 7.4 and carried into the README: Phase 2's before/after, hold
       throughput, availability latency, replay, broadcast cost and socket
@@ -31,7 +34,11 @@ Small, cheap, and their absence looks careless.
       counting SQL files and every raw k6 summary in `loadtest/results/`.
 - [x] **Architecture doc with rejected alternatives** — `docs/architecture.md`,
       six decisions × two rejected alternatives (Phase 8.2).
-- [ ] **`.env.example`** with every required variable. No secrets committed.
+- [x] **`.env.example`** with every required variable. No secrets committed.
+      Checked variable by variable against what the code actually reads: all
+      thirteen in `config/env.js` and all three `VITE_` variables the client
+      reads are listed, each with a comment. Every sensitive value —
+      `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` — ships empty.
 - [ ] **Screenshot or 30s GIF in the README.** Most people never open the demo.
       **Still open:** the repository contains no image assets at all.
 - [ ] **Rotate the Neon database password.** `docs/phases/phase-6-reconciliation.md`
