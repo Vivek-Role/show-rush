@@ -2,7 +2,7 @@ import { createApp } from './app.js';
 import { config, missingConnectionVars } from './config/env.js';
 import { closePool } from './db/pool.js';
 import { closeRedis, connectRedis } from './db/redis.js';
-import { attachSeatEvents, closeSeatEvents } from './realtime/hub.js';
+import { attachSeatEvents, closeSeatEvents, startSeatChannel } from './realtime/hub.js';
 import { startReconcileLoop, stopReconcileLoop } from './services/reconcileService.js';
 
 for (const name of missingConnectionVars()) {
@@ -25,6 +25,12 @@ const server = app.listen(config.port, () => {
 
 // Module 6.3. Shares the HTTP server, so there is one port and one process.
 attachSeatEvents(server);
+
+// Phase 9 M3. The subscriber that makes several instances one room. Started
+// after the listener is up and deliberately not awaited: a Redis that is slow
+// or absent must not delay the port binding a health check is waiting on, and
+// an instance with no channel still serves its own sockets.
+void startSeatChannel();
 
 // Module 6.2. Started after the listener is up, so a slow first sweep cannot
 // delay the port binding Render's health check is waiting on.

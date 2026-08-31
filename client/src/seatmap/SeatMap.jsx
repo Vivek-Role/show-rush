@@ -1,10 +1,24 @@
 import { Fragment } from 'react';
+import { SeatCanvas } from './SeatCanvas.jsx';
 import { SeatButton } from './SeatButton.jsx';
 import { seatKey } from './seatIndex.js';
 import './seatmap.css';
 
+// BACKLOG.md P1 — which renderer draws the seats.
+//
+// Both ship permanently, the same way BOOKING_MODE and VITE_SEAT_UPDATE_MODE
+// both keep their two paths: the DOM grid is the baseline the canvas is
+// measured against, and a before-number that cannot be re-run is a claim
+// rather than a measurement. It is also the only accessible path — a canvas
+// has no seat elements, no focus order and no aria-pressed, and BACKLOG.md P3
+// keeps canvas accessibility as its own deferred item.
+//
+// Anything other than 'dom' is canvas, so a typo cannot silently select a
+// renderer nobody asked for; the default is canvas.
+const RENDERER = import.meta.env.VITE_SEAT_RENDERER === 'dom' ? 'dom' : 'canvas';
+
 // Renders the grid and nothing else. No selection state lives here — that is
-// Module 3.3 — which is also what keeps the canvas swap in BACKLOG.md P1 a
+// Module 3.3 — which is also what kept the canvas swap in BACKLOG.md P1 a
 // change of render layer rather than a rewrite.
 //
 // The layout drives geometry: which rows exist, how many columns, where the
@@ -19,6 +33,19 @@ export function SeatMap({
   onToggle,
   limitReached = false,
 }) {
+  if (RENDERER === 'canvas') {
+    return (
+      <SeatCanvas
+        layout={layout}
+        seatAt={seatAt}
+        isSelected={isSelected}
+        isPending={isPending}
+        onToggle={onToggle}
+        limitReached={limitReached}
+      />
+    );
+  }
+
   const aislesAfter = new Set(layout.aislesAfterColumn ?? []);
 
   return (

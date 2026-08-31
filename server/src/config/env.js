@@ -22,6 +22,10 @@ export const config = {
   // Defaults to 'safe' so that an unset variable can never deploy the racy
   // booking path. Enabling 'naive' is always a deliberate act.
   bookingMode: (process.env.BOOKING_MODE ?? 'safe').trim().toLowerCase(),
+  // Phase 9 M2. Which instance wrote a log line. Empty is normal for a single
+  // process — observability.js falls back to the pid — and it earns its keep in
+  // M3, where several instances write to the same place.
+  instanceId: (process.env.INSTANCE_ID ?? '').trim(),
   // Module 6.2. How long a booking may sit 'pending' before the sweep expires
   // it and gives its seats back. Must exceed the hold TTL — reconcileService
   // asserts that, where holdService's constant is importable without a cycle.
@@ -30,6 +34,17 @@ export const config = {
   // leaving `npm run reconcile` available — which is how a Phase 2 or Phase 5
   // benchmark guarantees nothing mutated bookings underneath it.
   reconcileIntervalSeconds: intFromEnv(process.env.RECONCILE_INTERVAL_SECONDS, 60),
+  // How many hold requests one signed-in user may make per window. The limit is
+  // per user rather than per IP, because the thing being prevented is one
+  // account holding a whole screen, and an IP is neither an account nor stable
+  // behind a proxy.
+  //
+  // 0 disables the limiter entirely, exactly as RECONCILE_INTERVAL_SECONDS=0
+  // disables the sweep — and for the same reason: a hold benchmark drives
+  // hundreds of requests a second as a single user, so a limiter left on would
+  // be measuring itself rather than the hold path.
+  holdRateLimit: intFromEnv(process.env.HOLD_RATE_LIMIT, 30),
+  holdRateWindowSeconds: intFromEnv(process.env.HOLD_RATE_WINDOW_SECONDS, 60),
 };
 
 // NaN rather than the fallback for a malformed value: an unset variable means

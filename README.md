@@ -241,6 +241,40 @@ part; clients branch on it.
 |---|---|---|
 | `GET` | `/` | `{"service":"show-rush","status":"ok"}` — Render's health check target |
 | `GET` | `/health` | `{"status","db","redis"}` — 200 healthy, 503 degraded |
+| `GET` | `/metrics` | p50/p95/p99 for the booking, hold, payment and availability paths. **404 when `NODE_ENV=production`** |
+
+### Observability
+
+Every request produces exactly one structured JSON line:
+
+```json
+{"ts":"2026-08-22T17:48:45.467Z","level":"info","instance_id":"m2-final",
+ "req_id":"9b994328-e9c2-4559-93f2-4a06e27d6402","method":"GET",
+ "route":"/api/movies","status":200,"duration_ms":8.25}
+```
+
+`X-Request-Id` is accepted from the caller when it is well-formed and minted
+otherwise, and is echoed back on the response so a client can correlate its logs
+with the server's. `INSTANCE_ID` labels the process; unset falls back to the pid.
+
+**The route pattern is logged, never the URL** — `/api/shows/:id/seatmap`, not
+`/api/shows/13/seatmap`. That keeps the metric cardinality equal to the size of
+the routing table rather than the size of the traffic, and it is the only reason
+percentiles mean anything. **No body, header, cookie, token, email or query
+string is ever logged.**
+
+`GET /metrics` reports count, min, max, mean and p50/p95/p99 per route.
+Percentiles are **bucket upper bounds** — the histogram is fixed-bucket so that
+memory stays constant under load — while count, min, max and mean are exact. The
+response says so itself in `percentile_method`. Metrics are per-process and
+reset on restart; this is a benchmarking and debugging surface, not a monitoring
+system.
+
+Measured overhead on the hold path: **none detectable**. Three runs with the
+middleware mounted and three without differ by 3.3 % of mean throughput against
+a ~16 % run-to-run spread, with near-identical ranges. Method, caveats, and why
+the control was not run under k6:
+[`docs/phases/phase-9-improvements.md`](docs/phases/phase-9-improvements.md).
 
 ### Auth
 
@@ -326,7 +360,7 @@ anything it misses expires at the TTL.
 
 | Method | Path | Body / auth | Success | Errors |
 |---|---|---|---|---|
-| `POST` | `/api/shows/:id/holds` | `{seat_ids}` · auth | `201 {hold: {show_id, seat_ids, ttl_seconds}}` | `409 SEATS_HELD`, `503 HOLDS_UNAVAILABLE`, `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
+| `POST` | `/api/shows/:id/holds` | `{seat_ids}` · auth | `201 {hold: {show_id, seat_ids, ttl_seconds}}` | `409 SEATS_HELD`, `429 RATE_LIMITED` (with `Retry-After`), `503 HOLDS_UNAVAILABLE`, `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
 | `DELETE` | `/api/shows/:id/holds` | `{seat_ids}` · auth | `200 {released: {show_id, seat_ids}}` | `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
 | `GET` | `/api/shows/:id/holds/ttl?seat_ids=1,2` | auth | `200 {holds: [{seat_id, ttl_seconds}]}` | `404 NOT_FOUND`, `400 VALIDATION_ERROR` |
 
@@ -616,6 +650,73 @@ figure.
 
 </details>
 
+### Seat map rendering — 5,000 seats, canvas + quadtree
+
+The canvas renderer from [`BACKLOG.md`](BACKLOG.md) P1, measured against the DOM
+baseline directly above. Both renderers ship permanently behind
+`VITE_SEAT_RENDERER`, defaulting to `canvas` — the DOM grid is the "before", and
+it is also the only path a screen reader or keyboard can use.
+
+| Metric | DOM (before) | Canvas (after) |
+|---|---|---|
+| **Click-to-paint, 5,000 seats** | median **79.0 ms** · 33.2–113.4 · n=10 | median **36.9 ms** · 26.1–41.9 · n=10 |
+| **`SeatButton` components re-rendered per click** | **5,000**, all 10 trials | **0 exist** — structural, not a profiler run |
+| Shapes drawn at fit view | 5,000 DOM nodes | 5,000 of 5,000 |
+| Shapes drawn at scale 1.65 | n/a | **312 of 5,000 (6.2 %)** |
+| Quadtree over the layout | n/a | 1,329 nodes, depth 5 |
+
+Same ten seats, same procedure, same viewport and browser as the baseline, on a
+production build served by `vite preview`. The canvas figure is its **worst
+case**: at the fit view nothing can be culled because everything is on screen.
+
+> **Frame rate while panning is deliberately not quoted here.** The display-rate
+> gate passed — 59.7 / 59.5 / 60.0 Hz idle, so unlike the batched-updates
+> measurement below these *are* rAF conditions — and pan rates were recorded
+> from 8.1 Hz at 5,000 shapes to 40.8 Hz at 288. But the draw loop was then
+> changed to batch seats by appearance, and the measuring tab became unavailable
+> before that could be re-measured. **No frame-rate claim is made for the
+> shipped renderer.** Full detail, including the numbers that were taken:
+> [`docs/phases/phase-9-improvements.md`](docs/phases/phase-9-improvements.md).
+
+<details>
+<summary>How these were measured</summary>
+
+```bash
+npm run seed:stress                 # Stadium (stress): 100 rows x 50 = 5,000
+npm run build:client                # production build
+npm run preview:client              # served on :4173, never the dev server
+```
+
+Ten trials on the same ten seats the baseline used
+(`A1, C38, F25, I12, K49, N36, Q23, T10, V47, Y34`), one warm-up discarded, each
+measured from the click to the **second `requestAnimationFrame`** after it, with
+the selection reset between trials. Every trial selected exactly one seat, which
+is also the hit-testing check: ten targets spread across all three aisle regions
+and into multi-letter row labels, ten exact hits.
+
+The display-rate gate ran first — three 2-second native `requestAnimationFrame`
+probes in the measuring tab — because Phase 7 §5 parked a measurement for
+exactly this reason. `window.__srSeatRender` exposes the counters and
+`fpsProbe(ms)`.
+
+| | |
+|---|---|
+| Machine | Windows 11, Intel Core i7-13620H; WSL2 Ubuntu 26.04 for the server |
+| Browser | Google Chrome 151, canvas viewport 1248x427, devicePixelRatio 1.5 |
+| Build | production, served by `vite preview` on :4173 |
+| React | 19.2.8 · Vite 8.2.2 · Node v22.23.2 |
+| Dataset | `npm run seed:stress` — 5,000 seats, one show |
+| Samples | 10 trials, median and full range reported |
+| Date | 2026-08-22 |
+
+**What these are not.** Single-point client-side measurements on one machine,
+one browser and one viewport. Not throughput, not capacity, not a server
+benchmark. The re-render comparison is structural — it establishes that the
+component the baseline counted is absent, not a profiler count of the canvas
+path.
+
+</details>
+
 ### Live seat updates — batched vs un-batched
 
 Under a sustained broadcast stream, buffering incoming seat updates and applying
@@ -664,6 +765,56 @@ See [Still not measured](#still-not-measured).
 
 Full method and limits:
 [`docs/phases/phase-6-reconciliation.md`](docs/phases/phase-6-reconciliation.md) §6.
+
+### Multi-instance fan-out — three instances behind nginx
+
+`BACKLOG.md` P2. Three Node instances behind nginx share one room per show over
+a single Redis pub/sub channel. Rooms stay local — a socket is held by exactly
+one process — and what crosses the instance boundary is the change itself.
+
+**No sticky sessions, and that is a property of the protocol rather than a
+tuning choice.** The seat socket is server-to-client only and its show is fixed
+at upgrade time, so a connection carries no state an instance could own. nginx
+round-robins, and the verification deliberately puts watcher and writer on
+different instances.
+
+The correctness claim is **exactly once**: the instance that made the change
+publishes and does not also deliver locally, so it has one delivery path rather
+than two. Measured over a 3-second window per action — 1 frame for a watcher on
+another instance, **1 frame for a watcher on the same instance as the writer**
+(where a double delivery would show), and 1 frame each for three watchers, one
+per instance. Holds, releases and bookings all verified; show isolation holds.
+
+| Condition | Topology | Holds/sec (3 runs) | Mean | Hold p95 |
+|---|---|---|---|---|
+| Phase 7 baseline | host, single instance, pre-M3 code | 499.5 (n=1) | **499.5** | — |
+| **A** | host, single instance, current code | 384.6 · 395.0 · 400.5 | **393.4** | 98.8 ms |
+| **C** | one container instance, direct | 374.3 · 359.1 · 351.6 | **361.7** | 108.2 ms |
+| **B** | three instances behind nginx | 331.3 · 344.6 · 346.6 | **340.8** | 172.3 ms |
+
+**Three instances did not raise hold throughput, and that is the honest
+result.** The workload is bound by the shared Postgres and Redis, not by Node
+CPU on one process, so spreading it over three adds hops without removing the
+constraint. What this buys is availability and correct fan-out, not throughput.
+The −21.2 % from the Phase 7 baseline to **A** is the cost of the change itself:
+seat status is now resolved on every seat change whether or not *this* instance
+has a watcher, because an instance cannot know whether another one does. **C**
+exists so containerisation is not silently charged to the fan-out.
+
+Same script and configuration as Phase 7 §7.3a — `loadtest/hold-throughput.js`
+unchanged, show 21 (5,000 seats), 50 VUs × 4 seats, 45 s, 0 watchers, every run
+at 0 conflicts and 0 failures. If Redis is unreachable the channel degrades to
+local-only rather than failing: verified that instances stay up, holds fail
+closed with 503, the seat map still renders without hold shading, Postgres still
+refuses the second sale, and the fan-out recovers when Redis returns — re-tested
+by re-running the delivery checks, not by trusting the status flag.
+
+```bash
+docker compose --profile multi up -d --build   # app1..app3 + nginx on :8080
+```
+
+Full method, per-check results and limitations:
+[`docs/phases/phase-9-improvements.md`](docs/phases/phase-9-improvements.md).
 
 ### Phase 7 results table
 
@@ -719,7 +870,9 @@ Full method, the discarded runs, and the 7.3a findings:
   [`docs/phases/phase-7-benchmarks.md`](docs/phases/phase-7-benchmarks.md) §5.
 - **The authenticated availability path.** All latency figures are anonymous;
   a signed-in viewer gets a different merge.
-- **Anything multi-instance.** Single Node process throughout.
+- **Multi-instance throughput as a gain.** Three instances were measured, and
+  they did **not** raise hold throughput on this hardware — see the
+  multi-instance section above for what was measured and why.
 
 The cold-start figure above is a deployment characteristic, not a performance
 benchmark of the system.
@@ -746,23 +899,37 @@ benchmark of the system.
   pool sizing is architecture and is approval-gated.
 - No endpoint returns a user's bookings; a booking is visible only through the
   seat map.
-- No cancellation, and no rate limiting on booking creation.
+- No cancellation. **Hold creation is rate limited per user** — 30 requests per
+  60 s by default, counted in Redis so the budget is shared across instances —
+  but booking creation is not, and neither is anything else.
 - No refresh tokens; a 7-day access token is the whole session model.
 - No password reset, email verification, or roles.
 - No rate limiting on the auth endpoints.
-- No automated test suite; every phase was verified by scripted HTTP, SQL and
-  browser checks rather than a test framework.
+- Unit tests cover the pure modules only — **42 `node:test` tests** across
+  seat-map geometry, the quadtree, the metrics histogram and the seat channel's
+  degraded path (`npm test`). Everything else is still verified by scripted
+  HTTP, SQL and browser checks per module: there are no route, service or
+  end-to-end tests, and no CI to run any of it.
 - The client is not deployed yet, so the cross-site cookie configuration
   (`SameSite=None; Secure`) is **not verified in production** — only the local
   same-site path is.
 - Two money formatters co-exist: `client/src/money.js` for totals and a local
   helper inside `Legend.jsx`. Deliberate, to keep a module boundary; worth
   folding together.
-- The seat map is a plain DOM grid — one click re-renders all 5,000 seats on the
-  stress dataset. Measured, not guessed; the canvas rewrite is `BACKLOG.md` P1.
-- **Single instance.** Holds and bookings are correct, but WebSocket updates do
-  not fan out across processes — a second Node instance would broadcast only to
-  its own sockets. Redis pub/sub fan-out is `BACKLOG.md` P2.
+- The seat map draws on a canvas by default, with a quadtree for hit-testing and
+  viewport culling; the DOM grid stays behind `VITE_SEAT_RENDERER=dom` as the
+  measured baseline and as the only accessible path. **The canvas is invisible
+  to assistive technology** — no seat elements, no focus order, no
+  `aria-pressed` — and canvas accessibility is still `BACKLOG.md` P3. No frame
+  rate is claimed for the shipped draw loop.
+- **Multi-instance runs locally, but only a single instance is deployed.**
+  WebSocket updates fan out across processes over Redis pub/sub, verified at
+  exactly one frame per watcher per change; `docker compose --profile multi`
+  runs three instances behind nginx. `render.yaml` is untouched, so the deployed
+  service is still one process, and merging and deploying remain separate,
+  unmade decisions. If Redis is unreachable the fan-out degrades to local-only:
+  a watcher on the instance that made the change is still told, one on another
+  instance is not.
 - **Benchmarks were measured locally** against the `docker compose` Postgres and
   Redis, never against the free-tier deploy, which would measure its throttling
   instead. The before/after ratio is the meaningful part; absolute numbers would

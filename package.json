@@ -12,6 +12,7 @@
     "client"
   ],
   "scripts": {
+    "test": "node --test \"client/src/**/*.test.js\" \"server/src/**/*.test.js\"",
     "dev": "npm run dev --workspace server",
     "start": "npm run start --workspace server",
     "migrate": "npm run migrate --workspace server",

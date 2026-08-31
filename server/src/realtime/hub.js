@@ -1,7 +1,9 @@
 import { WebSocketServer } from 'ws';
 import { config } from '../config/env.js';
+import { instanceId } from '../middleware/observability.js';
 import { getSeatStatusFor } from '../services/availabilityService.js';
 import { getShowWithScreen } from '../services/catalogService.js';
+import { closeSeatChannel, connectSeatChannel, publishSeats, seatChannelReady } from './seatChannel.js';
 
 // Phase 6.3 — seat status pushed to the people looking at that show.
 //
@@ -15,9 +17,26 @@ import { getShowWithScreen } from '../services/catalogService.js';
 // wrong whenever the seat is also booked, and it would be the second
 // seat-status path CLAUDE.md §10 exists to prevent.
 //
-// Single instance only. A second Node process would broadcast to its own
-// sockets and nobody else's; Redis pub/sub fan-out is BACKLOG.md P2, and this
-// is already a stated limitation of the build rather than a surprise.
+// Phase 9 M3 — several instances, one room per show across all of them.
+//
+// Rooms stay local: a socket is held by exactly one process, and only that
+// process ever writes to it. What crosses the instance boundary is the *news*,
+// over one Redis channel, and every instance fans that news out to whichever of
+// its own sockets care.
+//
+// The delivery path is the same whether a change happened here or elsewhere.
+// broadcastSeats publishes and then does nothing; the message comes back
+// through this instance's own subscriber and is delivered from there, alongside
+// every remote instance's copy. That is deliberate: an origin that also
+// delivered locally would have two delivery paths to keep in step, and the
+// first bug in that arrangement is a socket that receives the same update
+// twice. origin_instance_id rides along so a log can say where a change came
+// from — it is never used to suppress anything.
+//
+// Sticky sessions are not required, and that is a property of the protocol
+// rather than an accident. The socket is server-to-client only and its show is
+// fixed at upgrade time, so there is no per-connection state an instance could
+// hold that another instance would need.
 
 const PATH = '/ws';
 
@@ -163,41 +182,105 @@ export function attachSeatEvents(server) {
 }
 
 /**
- * Tell everyone watching this show what these seats now are.
+ * Send an already-resolved seat change to this instance's own sockets.
  *
- * Best effort in the strict sense — this is called after a hold, a booking and
- * a payment, and none of those may fail because a socket did. Every caller
- * fires it without awaiting, and everything below is caught here.
+ * The only place a frame is written. Reached from the Redis subscriber for
+ * every message, whichever instance published it, and directly only when the
+ * channel is unavailable — so there is exactly one delivery path in the normal
+ * case and no way for a socket to be told the same thing twice.
+ */
+function deliverSeats(payload) {
+  const showId = String(payload?.show_id ?? '');
+  const seats = payload?.seats;
+  if (!showId || !Array.isArray(seats) || seats.length === 0) return;
+
+  const room = rooms.get(showId);
+  if (!room || room.size === 0) return;
+
+  const message = JSON.stringify({
+    type: 'seats',
+    show_id: showId,
+    seats,
+    at: payload.at ?? new Date().toISOString(),
+  });
+
+  for (const ws of room) {
+    // OPEN only. Sending to a socket mid-close throws, and one dead client must
+    // not cost the rest of the room its update.
+    if (ws.readyState === ws.OPEN) ws.send(message);
+  }
+}
+
+/**
+ * Start listening for the other instances. Called once at boot.
+ */
+export async function startSeatChannel() {
+  await connectSeatChannel(deliverSeats);
+}
+
+/**
+ * Tell everyone watching this show — on any instance — what these seats now are.
  *
- * The read is skipped entirely when nobody is watching, so an unobserved show
- * costs one Map lookup rather than a query per hold.
+ * Best effort in the strict sense: this is called after a hold, a booking and a
+ * payment, and none of those may fail because a socket or Redis did. Every
+ * caller fires it without awaiting, and everything below is caught here. The
+ * signature is unchanged, and no caller knows any of this happened.
+ *
+ * The status is resolved ONCE, here, and the answer is what travels. Publishing
+ * bare seat ids and letting each instance resolve them would multiply the read
+ * by the instance count — three instances, three scoped Postgres queries and
+ * three Redis MGETs for one seat change — and Phase 7 already measured that one
+ * watcher costs a quarter of hold throughput. availabilityService remains the
+ * only thing that answers "is this seat taken"; it is simply asked once instead
+ * of N times.
+ *
+ * THE EMPTY-ROOM EARLY RETURN IS GONE, and that is a deliberate, measured
+ * regression. It used to skip the read when this instance had no watchers, but
+ * an instance cannot know whether some *other* instance has one, and a hold
+ * whose update never arrives is a worse failure than a wasted query. What that
+ * costs is measured in docs/phases/phase-9-improvements.md rather than guessed
+ * at — it is the F-4 trade-off, re-priced for a topology F-4 never saw.
  */
 export async function broadcastSeats(showId, seatIds) {
   try {
-    const room = rooms.get(String(showId));
-    if (!room || room.size === 0) return;
     if (!seatIds || seatIds.length === 0) return;
 
-    // Viewer-agnostic on purpose: no forUserId. One read answers the whole
-    // room, and the client is what knows which holds are its own.
+    // Viewer-agnostic on purpose: no forUserId. One read answers every room on
+    // every instance, and the client is what knows which holds are its own.
     const seats = await getSeatStatusFor(showId, seatIds);
     if (seats.length === 0) return;
 
-    const message = JSON.stringify({
-      type: 'seats',
+    const payload = {
+      origin_instance_id: instanceId(),
       show_id: String(showId),
       seats: seats.map((seat) => ({ id: seat.id, status: seat.status })),
       at: new Date().toISOString(),
-    });
+    };
 
-    for (const ws of room) {
-      // OPEN only. Sending to a socket mid-close throws, and one dead client
-      // must not cost the rest of the room its update.
-      if (ws.readyState === ws.OPEN) ws.send(message);
-    }
+    // Published, and then nothing: this instance's own subscriber will hand it
+    // back to deliverSeats along with everyone else's.
+    if (await publishSeats(payload)) return;
+
+    // The channel is down. Tell our own room directly — which is precisely the
+    // single-instance behaviour this build shipped with, so the degraded mode
+    // is one that was already verified rather than a new code path.
+    deliverSeats(payload);
   } catch (err) {
     console.error(`seat events: broadcast failed for show ${showId}`, err);
   }
+}
+
+/**
+ * Whether cross-instance fan-out is actually working, for /health and for a
+ * verification run to assert on rather than infer.
+ */
+export function seatEventsStatus() {
+  return {
+    instance_id: instanceId(),
+    cross_instance: seatChannelReady() ? 'ok' : 'local-only',
+    rooms: rooms.size,
+    sockets: [...rooms.values()].reduce((total, room) => total + room.size, 0),
+  };
 }
 
 export async function closeSeatEvents() {
@@ -205,6 +288,10 @@ export async function closeSeatEvents() {
     clearInterval(heartbeat);
     heartbeat = null;
   }
+
+  // Before the sockets go: an instance that is shutting down should stop
+  // accepting news it can no longer deliver.
+  await closeSeatChannel();
 
   if (!wss) return;
 

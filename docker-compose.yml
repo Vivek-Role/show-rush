@@ -31,6 +31,85 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # Phase 9 M3 — three instances behind nginx.
+  #
+  # BEHIND A PROFILE, so `docker compose up -d` still brings up Postgres and
+  # Redis and nothing else. The everyday loop is unchanged: run the server on
+  # the host with `npm run dev`. These start only on request:
+  #
+  #   docker compose --profile multi up -d --build
+  #
+  # LOCAL ONLY. render.yaml is untouched and the deployed service is still a
+  # single instance.
+  #
+  # No Dockerfile: the repository is mounted and `npm start` is run directly.
+  # Every dependency in server/package.json is pure JavaScript — no native
+  # bindings — so the host's node_modules works unmodified inside Alpine, and
+  # not having an image to rebuild on every edit is worth more here than
+  # hermeticity.
+  # ---------------------------------------------------------------------------
+  app1: &app
+    image: node:22-alpine
+    profiles: ["multi"]
+    working_dir: /app
+    command: npm start
+    volumes:
+      - .:/app
+    environment: &app-env
+      NODE_ENV: development
+      PORT: 3000
+      # Service names, not localhost:5433 — inside the network these are the
+      # container ports, and the host port mappings do not apply.
+      DATABASE_URL: postgres://showrush:showrush@postgres:5432/showrush
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:5173}
+      # A background sweep mutating bookings underneath a benchmark would
+      # measure something other than the code under test — the same reason
+      # Phase 7 required it.
+      RECONCILE_INTERVAL_SECONDS: 0
+      # Reachable here on purpose. CLAUDE.md §10 keeps the racy path alive
+      # permanently, and a topology it cannot run in would quietly retire it.
+      BOOKING_MODE: ${BOOKING_MODE:-safe}
+      INSTANCE_ID: app1
+    ports:
+      - "3001:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app2:
+    <<: *app
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app2
+    ports:
+      - "3002:3000"
+
+  app3:
+    <<: *app
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app3
+    ports:
+      - "3003:3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["multi"]
+    container_name: showrush-nginx
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - app1
+      - app2
+      - app3
+
 volumes:
   postgres-data:
   redis-data:

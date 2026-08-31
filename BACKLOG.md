@@ -78,19 +78,30 @@ because a sequential scan exists: at the measured volumes (`show_prices` 56 rows
 
 These change what you can say in a room. Do these before adding any feature.
 
-### Canvas seat map + quadtree
+### Canvas seat map + quadtree — **DONE**
 **Why cut:** 1.5 days, and the DOM version demos fine.
 **Why it matters:** currently the frontend has no defensible metric. This is the
 only item here that fixes that.
+**Built and measured.** Both renderers ship permanently behind
+`VITE_SEAT_RENDERER=canvas|dom`, defaulting to canvas — the DOM grid is the
+baseline the canvas is measured against, and it is the only accessible path.
+Click-to-paint at 5,000 seats went from a median of **79.0 ms to 36.9 ms**
+(n=10 each), and the 5,000 `SeatButton` re-renders per click became zero
+components. `docs/phases/phase-9-improvements.md`.
 
-- [ ] Scale layout to ~5,000 seats (stadium mode)
-- [ ] Canvas renderer replacing the DOM grid — swap the render layer only, the
-      selection hook shouldn't change
-- [ ] Quadtree for hit-testing on click
-- [ ] Viewport culling — draw only what's visible
-- [ ] Zoom/pan with a transform stack
-- [ ] **Measure:** re-renders per click, click-to-paint, FPS while panning,
-      shapes drawn vs total. Compare against the DOM baseline recorded in Phase 3.
+- [x] Scale layout to ~5,000 seats (stadium mode)
+- [x] Canvas renderer replacing the DOM grid — swap the render layer only, the
+      selection hook shouldn't change — `useSeatSelection.js` diff is empty
+- [x] Quadtree for hit-testing on click — 1,329 nodes, depth 5, hand-written
+- [x] Viewport culling — draw only what's visible — 6.2 % of 5,000 drawn at
+      scale 1.65, 100 % at the fit view where nothing can be culled
+- [x] Zoom/pan with a transform stack
+- [ ] **Measure — partly done.** Re-renders per click, click-to-paint and shapes
+      drawn vs total are measured against the Phase 3 baseline. **FPS while
+      panning is NOT MEASURED for the shipped draw loop** — the pan-rate table
+      was taken before the draw loop was changed to batch seats by appearance,
+      and the measuring tab became unavailable before it could be re-run. No
+      frame-rate claim is made anywhere. This box stays unticked until it is.
 
 > The Phase 3 baseline **was** recorded, so this work is claimable: 5,000
 > `SeatButton` re-renders per click in all 10 trials, click-to-paint median
@@ -131,13 +142,46 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
 - [ ] **Dynamic pricing** by tier and occupancy, with price locked at hold time
       so it can't shift mid-checkout.
 - [ ] **Cancellation + refund flow** with a policy window.
-- [ ] **Multi-instance deployment** — 2-3 Node instances behind a load balancer,
-      Redis pub/sub for WebSocket fan-out. Verify holds and bookings stay correct
-      across instances.
-- [ ] **Rate limiting** on hold creation — one user shouldn't be able to hold a
-      whole screen.
-- [ ] **Observability** — structured logs, request IDs, p50/p95/p99 timing on the
-      booking path.
+- [x] **Multi-instance deployment** — three Node instances behind nginx, one
+      Redis pub/sub channel for WebSocket fan-out, behind a `multi` compose
+      profile. **Local only: `render.yaml` is untouched and the deployed service
+      is still one process.** Correctness verified rather than assumed —
+      **exactly one frame** per watcher per change, including a watcher on the
+      same instance as the writer, where the origin publishing *and* delivering
+      locally would have shown as two. Holds, releases and bookings all fan out;
+      show isolation holds; no sticky sessions are needed, because the socket is
+      server-to-client only and its show is fixed at upgrade time. Redis down
+      degrades to local-only: instances stay up, holds fail closed, Postgres
+      still refuses the second sale, and delivery recovers when Redis returns.
+      *Measured, at the Phase 7 §7.3a configuration:* hold throughput **393.4/s**
+      single instance on the host with this code, **361.7/s** containerised,
+      **340.8/s** across three instances behind nginx, against the **499.5/s**
+      Phase 7 baseline on the pre-change code. **Three instances did not raise
+      throughput** — the workload is bound by the shared Postgres and Redis, so
+      this buys availability and correct fan-out, not speed.
+      `docs/phases/phase-9-improvements.md`.
+- [x] **Rate limiting** on hold creation — one user shouldn't be able to hold a
+      whole screen. A fixed window counted **in Redis, per user**, default 30
+      requests per 60 s, `429 RATE_LIMITED` with `Retry-After` when exceeded.
+      Redis rather than in-process because of the multi-instance work above: an
+      in-process counter would grant the limit *per instance*. Verified that the
+      budget is **shared across all three instances** (30 accepted, not 90),
+      that a second account has its own budget, and that releases are never
+      limited. Fails open if Redis is unreachable, where holds already fail
+      closed with 503. `HOLD_RATE_LIMIT=0` disables it, and **every hold
+      benchmark must set that** — otherwise the run measures the limiter.
+      No metric is claimed; the item names none.
+      `docs/phases/phase-9-improvements.md`.
+- [x] **Observability** — structured logs, request IDs, p50/p95/p99 timing on the
+      booking path. One JSON line per request carrying a request id, the **route
+      pattern** rather than the URL, status and duration; `X-Request-Id` honoured
+      when well-formed and echoed back; `GET /metrics` serving count, min, max,
+      mean and bucket-resolution percentiles per route, **404 in production**.
+      No dependency added — `node:crypto`, `console.log` and fixed-bucket
+      histograms, so memory stays constant under load. Measured overhead on the
+      hold path: **none detectable** against run-to-run noise. Per-process only,
+      resets on restart, and the WebSocket path is uninstrumented.
+      `docs/phases/phase-9-improvements.md`.
 - [ ] **CI** — deliberately skipped in the 8-day build; verification was run
       locally per module. GitHub Actions running typecheck, tests, and the
       `loadtest/` contention script on every push. *Cheap, and its absence is
@@ -240,8 +284,13 @@ if you specifically want a fuller demo video.
 Be able to state these out loud. Knowing your own gaps reads as seniority;
 being surprised by them reads as the opposite.
 
-- **Single instance.** Holds and bookings are correct, but WebSocket updates
-  won't fan out across instances without Redis pub/sub.
+- **Multi-instance works locally; only a single instance is deployed.**
+  WebSocket updates fan out across processes over Redis pub/sub, verified at
+  exactly one frame per watcher per change, and three instances run behind nginx
+  under `docker compose --profile multi`. `render.yaml` is untouched, so the
+  deployed service is still one process. Without Redis the fan-out degrades to
+  local-only — the instance that made the change still tells its own sockets,
+  other instances hear nothing.
 - **F-4 — live updates cost hold throughput, and the number is known.** Measured
   in Phase 7 on the same hold workload with watchers varied: **~499/s with 0
   watchers · ~373/s with 1 · ~238/s with 50** (−25.2% and −52.4%), hold latency
@@ -249,8 +298,14 @@ being surprised by them reads as the opposite.
   because each seat change pays a scoped query plus a Redis `MGET` once
   regardless of room size; the further drop at 50 is per-socket fan-out. This is
   a **measured architectural trade-off, not a defect** — the hub's early return
-  when nobody is watching is doing substantial work. Deferred as documented; no
+  when nobody is watching was doing substantial work. Deferred as documented; no
   change is recommended without deciding what to trade for it.
+  **Superseded in part by the multi-instance work above: that early return no
+  longer exists**, because an instance cannot know whether another instance has
+  a watcher. The three figures here were measured with it in place and are kept
+  as the record of that code. What replaced it was measured at 0 watchers only
+  (393.4/s on the same host topology); **the watcher-varied table has not been
+  re-run against the current code.**
 - **Only Phase 2 is deployed.** `main` and `origin/main` are at `692ffcf`;
   Phases 3–7 are nine unmerged commits on `feat/benchmarks`, and the client has
   never been deployed. Merging and deploying are separate decisions and neither

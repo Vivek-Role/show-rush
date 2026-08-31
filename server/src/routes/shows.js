@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { HttpError } from '../lib/http-error.js';
 import { seatIdList, validationError } from '../lib/validate.js';
 import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { rateLimitHolds } from '../middleware/rateLimit.js';
 import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from '../services/availabilityService.js';
 import { getShowWithScreen, seatIdsOnScreen } from '../services/catalogService.js';
@@ -50,7 +51,9 @@ async function requireSeatsOnScreen(screenId, seatIds) {
   }
 }
 
-showsRouter.post('/:id/holds', requireAuth, async (req, res) => {
+// Backlog M4. Creation only: releasing a hold gives seats back, and rate
+// limiting the way out of a mistake would be the wrong rule.
+showsRouter.post('/:id/holds', requireAuth, rateLimitHolds, async (req, res) => {
   const found = await requireShow(req.params.id);
   const seatIds = seatIdList((req.body ?? {}).seat_ids);
 
