@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { assertBookingConfig, config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { HttpError } from '../lib/http-error.js';
+import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from './availabilityService.js';
 import { getShowWithScreen, isId } from './catalogService.js';
 
@@ -85,8 +86,12 @@ async function resolveSeats(showId, screenId, seatIds) {
 
 // availabilityService owns seat-status truth (Phase 1 D4, PLAN.md 4.3). This is
 // the only availability read on the booking path — no second query path.
-async function assertSeatsAvailable(showId, seatIds) {
-  const seats = await getSeatStatus(showId);
+//
+// The booking user is passed through from Module 4.3 onward so that their own
+// hold does not refuse their own booking. Seats held by anybody else are not
+// available to them, which is the whole point of a hold.
+async function assertSeatsAvailable(showId, seatIds, userId) {
+  const seats = await getSeatStatus(showId, { forUserId: userId });
   const status = new Map(seats.map((seat) => [seat.id, seat.status]));
 
   if (seatIds.some((id) => status.get(id) !== 'available')) {
@@ -257,7 +262,7 @@ export async function createBooking({ userId, showId, seatIds }) {
   // it is why that path races. On the safe path it is UX only — see
   // createBookingSafe. Either way it returns the same 409 code the constraint
   // violation does, so a client never has to know which layer caught it.
-  await assertSeatsAvailable(found.show.id, seatIds);
+  await assertSeatsAvailable(found.show.id, seatIds, userId);
 
   const create = config.bookingMode === 'safe' ? createBookingSafe : createBookingNaive;
 
@@ -267,6 +272,15 @@ export async function createBooking({ userId, showId, seatIds }) {
     seats,
     totalPaise,
   });
+
+  // Module 6.3. The seats are claimed in Postgres by now — both paths commit
+  // before returning — so what the room is told is already true. Never awaited:
+  // a booking that succeeded must not fail because a socket did.
+  //
+  // This is on the naive path too, and deliberately changes nothing about it:
+  // it runs after createBookingNaive has returned, adds no transaction, no
+  // lock and no check, and the race it is measured for is untouched.
+  void broadcastSeats(found.show.id, seatIds);
 
   // status is 'pending' and stays there: Phase 5 owns the transition to 'paid'.
   return {

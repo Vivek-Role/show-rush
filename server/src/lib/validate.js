@@ -91,6 +91,29 @@ export function seatIdList(value, field = 'seat_ids') {
   return ids;
 }
 
+// Module 5.3. A booking reference is looked up verbatim — this only checks that
+// something reference-shaped arrived, and an unknown one is a 404, the same
+// answer every other read route gives.
+export function bookingRef(value, field = 'booking_ref') {
+  const trimmed = asTrimmedString(value, field);
+  if (trimmed.length === 0 || trimmed.length > 64) {
+    throw validationError(`${field} is required`);
+  }
+  return trimmed;
+}
+
+// The provider's event id, and the key the whole idempotency layer turns on.
+// Nothing is inferred from its shape: a real gateway picks the format, and
+// rejecting an unfamiliar one would be this system deciding what another
+// system's identifiers look like. Length is bounded because it is indexed.
+export function eventId(value, field = 'payment_event_id') {
+  const trimmed = asTrimmedString(value, field);
+  if (trimmed.length === 0 || trimmed.length > 128) {
+    throw validationError(`${field} is required`);
+  }
+  return trimmed;
+}
+
 export function personName(value, field = 'name') {
   const trimmed = asTrimmedString(value, field);
   if (trimmed.length === 0) {

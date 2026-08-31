@@ -9,14 +9,19 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "migrate": "node src/db/migrate.js",
-    "seed": "node src/seed/index.js"
+    "seed": "node src/seed/index.js",
+    "seed:stress": "node src/seed/stress.js",
+    "reconcile": "node src/reconcile.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0",
-    "redis": "^6.2.1"
+    "redis": "^6.2.1",
+    "ws": "^8.21.3"
   }
 }

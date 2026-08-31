@@ -104,3 +104,21 @@ export async function getShowWithScreen(showId) {
     },
   };
 }
+
+// Do these seat ids belong to that screen? A catalogue question, and the same
+// answer bookingService.resolveSeats takes from the seats table — seat identity
+// lives in Postgres, never in Redis, so holdService is not asked to know it.
+// Returns the ids that exist; the caller compares counts and decides the status
+// code, exactly as the booking path does.
+export async function seatIdsOnScreen(screenId, seatIds) {
+  // A malformed id would make Postgres raise on the bigint cast rather than
+  // simply not matching. Treated as "no such seat", like everywhere else.
+  if (!isId(screenId) || !seatIds.every(isId)) return [];
+
+  const { rows } = await pool.query(
+    `select id from seats where screen_id = $1 and id = any($2::bigint[])`,
+    [screenId, seatIds],
+  );
+
+  return rows.map((row) => String(row.id));
+}

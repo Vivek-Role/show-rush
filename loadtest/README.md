@@ -1,17 +1,34 @@
 # loadtest
 
-The evidence behind Phase 2's before/after numbers. A metric without a
-reproducible script is a claim, so the script lives here, in the repository,
+The evidence behind the build's two non-negotiable numbers — Phase 2's
+before/after double-booking count, and Phase 5's replay test. A metric without a
+reproducible script is a claim, so each script lives here, in the repository,
 next to the SQL that counts what it produced.
 
 | File | What it is |
 |---|---|
 | `seat-contention.js` | k6 script — N virtual users book the **same seat** on the **same show** at the same moment |
 | `count-double-bookings.sql` | the measurement — how many seats ended up sold twice |
+| `webhook-replay.js` | k6 script — N virtual users confirm the **same payment event** against the **same booking** (Phase 5.4) |
+| `count-payment-replay.sql` | the measurement — how many rows one replayed event produced |
+| `seat-churn.js` | k6 script — N virtual users hold and release seats to produce a sustained stream of WebSocket broadcasts (Phase 6.4) |
+| `count-reconciliation.sql` | the measurement — what the reconciliation sweep and the late-payment path did |
+| `hold-throughput.js` | k6 script — N virtual users acquire and release **disjoint** seat slices, for the hold-throughput claim (Phase 7.1) |
+| `availability-latency.js` | k6 script — `GET /shows/:id/seatmap` at a fixed arrival rate, for the availability-latency claim (Phase 7.1) |
+| `ws-fanout.js` | k6 script — opens N WebSocket connections and holds them, so server memory can be sampled from outside (Phase 7.3a instrument) |
 | `results/` | raw k6 summaries behind each recorded number (created by Module 2.3) |
 
-The script produces requests. It never reports a double-booking count — that
-comes from the database afterwards, via the SQL.
+A script produces requests. It never reports the number itself — that comes from
+the database afterwards, via the SQL.
+
+`seat-churn.js` is the exception that proves the rule: it is a **generator**, not
+a benchmark. It exists to load the *client*, and the number it prints is how many
+broadcasts it caused — the denominator for counters read in the browser. Nothing
+it prints is a performance figure for this system.
+
+**Disable the sweep before any Phase 2 or Phase 5 run.** Set
+`RECONCILE_INTERVAL_SECONDS=0`. A background job changing booking status
+mid-measurement measures something other than the code under test.
 
 ---
 
@@ -210,3 +227,227 @@ Save the raw summary alongside it:
 SUMMARY_OUT=loadtest/results/2.3-naive-2026-08-20.json \
   k6 run loadtest/seat-contention.js
 ```
+
+---
+
+## `webhook-replay.js` — Phase 5.4, the idempotency test
+
+The second non-negotiable in `PLAN.md`: replaying one payment event 10,000 times
+**concurrently** must produce exactly one paid booking. Sequential replay only
+proves the constraint exists; concurrent replay proves it holds under the race
+that actually happens.
+
+```bash
+# terminal 1 — the server (BOOKING_MODE is irrelevant here; safe is the default)
+npm start
+
+# terminal 2 — the load
+k6 run loadtest/webhook-replay.js
+
+# terminal 2 — the measurement
+docker exec -i showrush-postgres \
+  psql -U showrush -d showrush -f - < loadtest/count-payment-replay.sql
+```
+
+`setup()` logs in, creates **one** booking on the first available seat of the
+show, and refuses to start unless that booking is `pending` — a booking in any
+other state would make every attempt a 409 and report zero while proving nothing.
+
+### Options
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BASE_URL` | `http://localhost:3000` | never a deployed URL |
+| `SHOW_ID` | `1` | |
+| `VUS` | `500` | how many attempts are in flight at once |
+| `ITERATIONS` | `20` | per VU; `VUS × ITERATIONS` is the attempt count |
+| `BARRIER_MS` | `3000` | holds every VU's **first** attempt until a common start |
+| `EVENT_ID` | `evt-replay-<timestamp>` | one id per run |
+| `EMAIL` / `PASSWORD` | the demo account | |
+| `SUMMARY_OUT` | unset | path for the raw JSON summary |
+
+### 10,000 attempts at a concurrency of 500 — say it that way
+
+The default workload is 500 VUs × 20 iterations. That is ten thousand attempts
+with five hundred in flight at any moment, which is what this machine can
+actually produce. It is **not** ten thousand simultaneous connections, and no
+recorded number should say that it is.
+
+`EVENT_ID` defaults to a fresh id per run for a reason: `payment_events.event_id`
+is globally unique, so re-running against a database that already holds the
+previous run's event would report 10,000 duplicates and zero creations — a run
+that passes every eye test while measuring nothing. Re-seed between recorded
+runs anyway.
+
+### Reading the output
+
+```
+  201 created          1        the one confirmation that did the work
+  200 duplicate        9999     replays, answered from the stored row
+  409 conflict         0        a second, different event on a paid booking
+  dropped_iterations   0        attempts k6 could not run — read this first
+  http_req_failed      0.00%    anything other than 200 or 201
+```
+
+Then the SQL must show **one** `payment_events` row for the event, the booking
+`paid`, and no extra `booking_seats` rows. A 200 is the correct answer to a
+replay (`PLAN.md` 5.2 fixes it there deliberately), so the script's expected
+statuses are 200 and 201.
+
+**Pool depth bounds the concurrency, not the correctness.** `server/src/db/pool.js`
+sets no `max`, so `pg` allows ten connections and the 500 in-flight requests
+queue behind them in Node. That shapes latency in the summary; it has no bearing
+on how many rows the event produced. Pool sizing is Phase 7.3b and
+approval-gated.
+
+---
+
+## Phase 6.4 — seat churn, and the client counters
+
+```bash
+# terminal 1 — the API
+RECONCILE_INTERVAL_SECONDS=0 npm start
+
+# terminal 2 — the client under measurement
+PROFILE=1 npm run build:client        # add VITE_SEAT_UPDATE_MODE=immediate for the "before"
+npm run preview:client                # http://localhost:4173
+
+# open http://localhost:4173/shows/20 in a VISIBLE, FOREGROUND tab, then:
+# terminal 3 — the load
+SHOW_ID=20 VUS=15 SEATS_PER_VU=2 STEP_MS=50 DURATION=20s   SUMMARY_OUT=loadtest/results/6.4-batched-$(date +%F).json k6 run loadtest/seat-churn.js
+```
+
+Read the browser-side numbers from the console:
+
+```js
+window.__srSeatUpdates   // { mode, messages, seatUpdates, flushes }
+```
+
+**The tab must be visible.** Chrome does not run `requestAnimationFrame` in a
+hidden tab, and the hook falls back to a 1 s timer there instead. The recorded
+2026-08-22 run was taken in a hidden tab and therefore measures the fallback
+clock, not rAF — see `docs/phases/phase-6-reconciliation.md` §6.
+
+---
+
+## Phase 7 — the three new scripts
+
+Added by Phase 7.1 so that each of `PLAN.md` 7.1's claims has one committed
+script. `seat-contention.js` and `webhook-replay.js` already covered the first
+two claims and were **not** modified.
+
+`seat-churn.js` was deliberately left alone as well. Phase 6 built it as a
+*generator* — it loads the browser and reports what it caused, never a
+performance figure — and re-labelling it a benchmark afterwards would falsify
+that record. `hold-throughput.js` is the benchmark; `seat-churn.js` is the
+stimulus.
+
+**Every Phase 7 run used `RECONCILE_INTERVAL_SECONDS=0`.** A sweep mutating
+booking status mid-run measures something other than the code under test.
+
+### `hold-throughput.js` — Phase 7.1, hold throughput
+
+**Uncontended by construction.** `setup()` cuts the show's available seats into
+one disjoint slice per VU and refuses to start if there are not enough, so two
+VUs can never reach for the same seat. Contention is `seat-contention.js`'s
+question and mixing the two produces a number that answers neither. Any 409 means
+the slices overlapped: the summary prints a warning and the run must be discarded.
+
+```bash
+RECONCILE_INTERVAL_SECONDS=0 npm start          # terminal 1
+
+SHOW_ID=21 VUS=50 SEATS_PER_VU=4 DURATION=60s \
+  SUMMARY_OUT=loadtest/results/7.2d-holds-$(date +%F)-vus50.json \
+  k6 run loadtest/hold-throughput.js            # terminal 2
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BASE_URL` | `http://localhost:3000` | never a deployed URL |
+| `SHOW_ID` | `1` | needs `VUS × SEATS_PER_VU` free seats — use the stress show for large runs |
+| `VUS` | `50` | |
+| `SEATS_PER_VU` | `4` | seats per request; also sets how much work one acquire does |
+| `DURATION` | `60s` | |
+| `WATCHERS` | `0` | **a label only.** Recorded in the summary so the 7.3a broadcast-cost runs can be told apart. The script opens no sockets |
+| `SUMMARY_OUT` | unset | path for the raw JSON summary |
+
+Read `dropped_iterations` and `409 conflicts` before the rate. A run with
+conflicts is not a throughput measurement.
+
+### `availability-latency.js` — Phase 7.1, availability query latency
+
+`GET /api/shows/:id/seatmap` — one Postgres query plus one Redis `MGET` whose
+width is the seat count. **Anonymous on purpose:** the route is `optionalAuth` and
+a signed-in viewer gets a different merge (their own holds read back as
+available). Holding that constant keeps one variable in play, so **the
+authenticated path is not covered by these numbers.**
+
+`constant-arrival-rate`, not `constant-vus` — this is latency at a stated offered
+load, not a search for the collapse point. A rate that could not be delivered
+shows up in `dropped_iterations`, which is the first number to read: a load that
+never landed has very cheap latency.
+
+```bash
+SHOW_ID=1  RATE=50 DURATION=60s HOLD_SEATS=0 \
+  SUMMARY_OUT=loadtest/results/7.2e-availability-$(date +%F)-normal-cold.json \
+  k6 run loadtest/availability-latency.js
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SHOW_ID` | `1` | run it against both a seeded screen and `npm run seed:stress` |
+| `RATE` | `50` | requests per second offered |
+| `DURATION` | `60s` | |
+| `HOLD_SEATS` | `0` | pre-hold N seats so the `MGET` returns hits rather than an all-miss reply. Released in `teardown()` |
+
+The summary records the seat count, which **is** the `MGET` width. A latency
+figure without its seat count is not comparable to anything.
+
+### `ws-fanout.js` — Phase 7.3a instrument
+
+Not one of 7.1's four claims, and **it reports no performance number.** It opens
+`SOCKETS` connections to `/ws?show_id=<id>`, holds them, and closes them, so that
+something else can be observed.
+
+**It cannot measure server memory** — a client has no view of a server's RSS.
+Sample that from outside the process:
+
+```bash
+SHOW_ID=21 SOCKETS=1000 DURATION_MS=45000 k6 run loadtest/ws-fanout.js &
+awk '/^VmRSS:/{print $2}' /proc/$(pgrep -f 'node src/index.js')/status
+```
+
+Uses `k6/websockets`. Verified against **k6 v2.2.0**, where `k6/net/websockets`
+does not exist and `k6/experimental/websockets` is deprecated.
+
+If `sockets opened` or `hello frames` disagree with `SOCKETS`, the server never
+held the intended number of connections and any memory figure sampled against
+that run is against the wrong denominator. The summary says so explicitly.
+
+### Sampling the pool and the query plans
+
+Neither needs a script. Both are Phase 7.3a, both read-only:
+
+```bash
+# pool utilisation during a load — pg allows 10 by default, Postgres allows 100
+docker exec showrush-postgres psql -U showrush -d showrush -c \
+  "select count(*), state from pg_stat_activity where datname='showrush' group by state"
+
+# which indexes the availability queries actually use
+docker exec showrush-postgres psql -U showrush -d showrush -c \
+  "select relname, indexrelname, idx_scan from pg_stat_user_indexes order by relname"
+```
+
+### A note on measuring the client
+
+`docs/phases/phase-7-benchmarks.md` §5 records why the Module 6.4 rAF number is
+**still owed** after Phase 7. Both halves ran in a confirmed-visible foreground
+tab and every broadcast was received, but the tab's `requestAnimationFrame`
+cadence measured **24.1 Hz idle** against a 59 Hz panel, and the flush count
+implies a far lower rate under load. The flush *ratio* is therefore not recorded
+as a display-rate rAF result.
+
+**If you re-run it, measure the cadence first** — idle and under load — and record
+both beside the flush counts. `document.visibilityState === "visible"` is **not**
+sufficient: Chrome throttles rAF hard for an occluded window while still
+reporting the tab as visible.

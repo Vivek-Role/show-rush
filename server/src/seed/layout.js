@@ -6,9 +6,20 @@
 // it. The layout describes only how to draw them — rows, columns, tiers, and
 // where the aisles fall.
 
+// Bijective base-26: A…Z, then AA, AB, … AZ, BA, and so on.
+//
+// A single letter was enough while the largest screen had thirteen rows, but
+// the stress layout has a hundred. Past index 25 the old version emitted '[',
+// '\', ']' and then lowercase — punctuation in seats.row_label, which is the
+// authoritative table, and unparseable by the seat references in data.js.
+//
+// Indices 0–25 are unchanged, so every existing screen seeds byte-identically.
 function rowLabel(index) {
-  // Thirteen rows at most in this build, so a single letter is enough.
-  return String.fromCharCode(65 + index);
+  let label = '';
+  for (let n = index; n >= 0; n = Math.floor(n / 26) - 1) {
+    label = String.fromCharCode(65 + (n % 26)) + label;
+  }
+  return label;
 }
 
 // Parameterised so a larger variant is a different call rather than a rewrite.

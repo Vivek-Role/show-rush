@@ -19,15 +19,65 @@ Small, cheap, and their absence looks careless.
       cold-start path; if it takes 40s, note it in the README.
 - [ ] **Seeded demo data.** A recruiter opening an empty app sees a broken app.
       Ship with movies, shows, and a partially-booked seat map.
-- [ ] **Demo account credentials in the README.** Don't make anyone register.
-- [ ] **README benchmark table filled with YOUR measured numbers.**
-      Never a number from a conversation or a blog post. Include how you
-      measured: machine, DB version, concurrency level.
-- [ ] **`loadtest/` scripts committed.** The scripts are the evidence. A metric
-      without a reproducible script is a claim.
-- [ ] **Architecture doc with rejected alternatives** — see P1 below if not done.
-- [ ] **`.env.example`** with every required variable. No secrets committed.
+- [x] **Demo account credentials in the README.** Don't make anyone register.
+      Present near the top of the README, with the caveat that the link and
+      credentials were last exercised on 2026-08-18 against the deployed Phase 2
+      build — the credentials are documented, the deployment is not re-verified.
+- [x] **README benchmark table filled with YOUR measured numbers.** Done in
+      Phase 7.4 and carried into the README: Phase 2's before/after, hold
+      throughput, availability latency, replay, broadcast cost and socket
+      memory, each with machine, versions, concurrency and commit.
+      `docs/phases/phase-7-benchmarks.md`.
+- [x] **`loadtest/` scripts committed.** All six k6 scripts —
+      `seat-contention.js`, `webhook-replay.js`, `hold-throughput.js`,
+      `availability-latency.js`, `ws-fanout.js`, `seat-churn.js` — plus the three
+      counting SQL files and every raw k6 summary in `loadtest/results/`.
+- [x] **Architecture doc with rejected alternatives** — `docs/architecture.md`,
+      six decisions × two rejected alternatives (Phase 8.2).
+- [x] **`.env.example`** with every required variable. No secrets committed.
+      Checked variable by variable against what the code actually reads: all
+      thirteen in `config/env.js` and all three `VITE_` variables the client
+      reads are listed, each with a comment. Every sensitive value —
+      `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` — ships empty.
 - [ ] **Screenshot or 30s GIF in the README.** Most people never open the demo.
+      **Still open:** the repository contains no image assets at all.
+- [ ] **Rotate the Neon database password.** `docs/phases/phase-6-reconciliation.md`
+      §9 records that a `NEON_DATABASE_URL` in the local `.env` was printed in
+      full, password included, to a session transcript. `.env` is gitignored and
+      was never committed, and no code reads that variable — but the credential
+      should be rotated in the Neon console before any production use, any
+      consumer (Render env vars, local `.env`) updated, and the unused variable
+      dropped from `.env` entirely. A manual security task, not implementation
+      work; no credential value belongs in this file.
+
+> **Status, 2026-08-22.** The two unticked demo items are unticked on purpose.
+> The deployed link serves `main`, which is still the Phase 2 merge (`692ffcf`)
+> — Phases 3–7 are unmerged — so it has no holds, no payments, no live updates
+> and no client. It was last exercised 2026-08-18 and **was not re-tested in
+> Phase 8**, so "actually works" is recorded as unverified rather than assumed.
+
+---
+
+## Phase 7 findings (7.3a) — dispositions
+
+Ruled at the 7.3b gate on 2026-08-22, and re-confirmed in Phase 8. **No fix was
+applied for any of them.** Recorded here so a deferred finding stays visible
+instead of living only in a phase document. Full evidence:
+[`docs/phases/phase-7-benchmarks.md`](docs/phases/phase-7-benchmarks.md) §7.
+
+| | Finding | Ruling | Where it lives now |
+|---|---|---|---|
+| **F-1** | Own-hold / multi-client seat rendering | **EXPLAINED** in Phase 8 (M1); no fix | P3 below |
+| **F-2** | `pg` pool ceiling of 10 | **DEFER** | P2 below |
+| **F-3** | Duplicate `booking_seats` indexes | **DEFER** — schema maintenance | P2 below |
+| **F-4** | Broadcast cost per watcher | **DEFER / DOCUMENT** — a measured trade-off, not a defect | Known limitations below |
+| **F-5** | WebSocket memory growth | **CLOSED** — no growth observed through 1,000 sockets | closed; not reopened |
+| **F-6** | Seq scans on `show_prices` and `bookings` | **CLOSED for current scale** | closed; not reopened |
+
+**F-5 and F-6 are closed and stay closed.** No index is to be added merely
+because a sequential scan exists: at the measured volumes (`show_prices` 56 rows,
+`bookings` 5) a seq scan beats an index, and the whole-show query executed in
+0.446 ms at 160 seats and 4.479 ms at 5,000. Revisit only if data volume changes.
 
 ---
 
@@ -35,27 +85,43 @@ Small, cheap, and their absence looks careless.
 
 These change what you can say in a room. Do these before adding any feature.
 
-### Canvas seat map + quadtree
+### Canvas seat map + quadtree — **DONE**
 **Why cut:** 1.5 days, and the DOM version demos fine.
 **Why it matters:** currently the frontend has no defensible metric. This is the
 only item here that fixes that.
+**Built and measured.** Both renderers ship permanently behind
+`VITE_SEAT_RENDERER=canvas|dom`, defaulting to canvas — the DOM grid is the
+baseline the canvas is measured against, and it is the only accessible path.
+Click-to-paint at 5,000 seats went from a median of **79.0 ms to 36.9 ms**
+(n=10 each), and the 5,000 `SeatButton` re-renders per click became zero
+components. `docs/phases/phase-9-improvements.md`.
 
-- [ ] Scale layout to ~5,000 seats (stadium mode)
-- [ ] Canvas renderer replacing the DOM grid — swap the render layer only, the
-      selection hook shouldn't change
-- [ ] Quadtree for hit-testing on click
-- [ ] Viewport culling — draw only what's visible
-- [ ] Zoom/pan with a transform stack
-- [ ] **Measure:** re-renders per click, click-to-paint, FPS while panning,
-      shapes drawn vs total. Compare against the DOM baseline recorded in Phase 3.
+- [x] Scale layout to ~5,000 seats (stadium mode)
+- [x] Canvas renderer replacing the DOM grid — swap the render layer only, the
+      selection hook shouldn't change — `useSeatSelection.js` diff is empty
+- [x] Quadtree for hit-testing on click — 1,329 nodes, depth 5, hand-written
+- [x] Viewport culling — draw only what's visible — 6.2 % of 5,000 drawn at
+      scale 1.65, 100 % at the fit view where nothing can be culled
+- [x] Zoom/pan with a transform stack
+- [ ] **Measure — partly done.** Re-renders per click, click-to-paint and shapes
+      drawn vs total are measured against the Phase 3 baseline. **FPS while
+      panning is NOT MEASURED for the shipped draw loop** — the pan-rate table
+      was taken before the draw loop was changed to batch seats by appearance,
+      and the measuring tab became unavailable before it could be re-run. No
+      frame-rate claim is made anywhere. This box stays unticked until it is.
 
-> If the Phase 3 baseline numbers were never recorded, record them first by
-> checking out the pre-canvas commit. Without a "before," this work is unclaimable.
+> The Phase 3 baseline **was** recorded, so this work is claimable: 5,000
+> `SeatButton` re-renders per click in all 10 trials, click-to-paint median
+> 79.0 ms (range 33.2–113.4, n=10), on the `npm run seed:stress` dataset. Method
+> and caveats are in the README. Compare against those, not against a re-measure.
 
-### Architecture decision doc
-**Not deferred — it's Phase 8.2 in `PLAN.md`.** The six decisions and their
-rejected alternatives are listed there. Don't duplicate the list here; one
-canonical copy or they drift apart.
+### Architecture decision doc — **DONE (Phase 8.2)**
+**Written: [`docs/architecture.md`](docs/architecture.md).** Six decisions, each
+with two rejected alternatives and the evidence behind the choice: the `UNIQUE`
+constraint vs `SELECT … FOR UPDATE` vs advisory locks; Redis holds vs DB-only
+holds vs none; the 420-second TTL; WebSocket vs SSE vs polling; PostgreSQL vs
+MongoDB vs SQLite; and Redis-failure behaviour. Don't duplicate the list here;
+one canonical copy or they drift apart.
 **Why it matters:** interviewers ask "why not X?", never "what's your architecture?"
 
 ### Real payment integration
@@ -83,17 +149,74 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
 - [ ] **Dynamic pricing** by tier and occupancy, with price locked at hold time
       so it can't shift mid-checkout.
 - [ ] **Cancellation + refund flow** with a policy window.
-- [ ] **Multi-instance deployment** — 2-3 Node instances behind a load balancer,
-      Redis pub/sub for WebSocket fan-out. Verify holds and bookings stay correct
-      across instances.
-- [ ] **Rate limiting** on hold creation — one user shouldn't be able to hold a
-      whole screen.
-- [ ] **Observability** — structured logs, request IDs, p50/p95/p99 timing on the
-      booking path.
+- [x] **Multi-instance deployment** — three Node instances behind nginx, one
+      Redis pub/sub channel for WebSocket fan-out, behind a `multi` compose
+      profile. **Local only: `render.yaml` is untouched and the deployed service
+      is still one process.** Correctness verified rather than assumed —
+      **exactly one frame** per watcher per change, including a watcher on the
+      same instance as the writer, where the origin publishing *and* delivering
+      locally would have shown as two. Holds, releases and bookings all fan out;
+      show isolation holds; no sticky sessions are needed, because the socket is
+      server-to-client only and its show is fixed at upgrade time. Redis down
+      degrades to local-only: instances stay up, holds fail closed, Postgres
+      still refuses the second sale, and delivery recovers when Redis returns.
+      *Measured, at the Phase 7 §7.3a configuration:* hold throughput **393.4/s**
+      single instance on the host with this code, **361.7/s** containerised,
+      **340.8/s** across three instances behind nginx, against the **499.5/s**
+      Phase 7 baseline on the pre-change code. **Three instances did not raise
+      throughput** — the workload is bound by the shared Postgres and Redis, so
+      this buys availability and correct fan-out, not speed.
+      `docs/phases/phase-9-improvements.md`.
+- [x] **Rate limiting** on hold creation — one user shouldn't be able to hold a
+      whole screen. A fixed window counted **in Redis, per user**, default 30
+      requests per 60 s, `429 RATE_LIMITED` with `Retry-After` when exceeded.
+      Redis rather than in-process because of the multi-instance work above: an
+      in-process counter would grant the limit *per instance*. Verified that the
+      budget is **shared across all three instances** (30 accepted, not 90),
+      that a second account has its own budget, and that releases are never
+      limited. Fails open if Redis is unreachable, where holds already fail
+      closed with 503. `HOLD_RATE_LIMIT=0` disables it, and **every hold
+      benchmark must set that** — otherwise the run measures the limiter.
+      No metric is claimed; the item names none.
+      `docs/phases/phase-9-improvements.md`.
+- [x] **Observability** — structured logs, request IDs, p50/p95/p99 timing on the
+      booking path. One JSON line per request carrying a request id, the **route
+      pattern** rather than the URL, status and duration; `X-Request-Id` honoured
+      when well-formed and echoed back; `GET /metrics` serving count, min, max,
+      mean and bucket-resolution percentiles per route, **404 in production**.
+      No dependency added — `node:crypto`, `console.log` and fixed-bucket
+      histograms, so memory stays constant under load. Measured overhead on the
+      hold path: **none detectable** against run-to-run noise. Per-process only,
+      resets on restart, and the WebSocket path is uninstrumented.
+      `docs/phases/phase-9-improvements.md`.
 - [ ] **CI** — deliberately skipped in the 8-day build; verification was run
       locally per module. GitHub Actions running typecheck, tests, and the
       `loadtest/` contention script on every push. *Cheap, and its absence is
       the first thing a reviewer notices.*
+- [ ] **F-2 — size the `pg` connection pool deliberately.** `server/src/db/pool.js`
+      sets no `max`, so `pg` allows **10**. Sampled during a 200-VU hold load,
+      `pg_stat_activity` showed **exactly 10 connections at every sample** while
+      Postgres itself allowed **`max_connections=100`**, and most of those
+      connections were idle. Hold throughput was flat from 50 to 200 VUs
+      (605.3 → 590.9/s) while latency scaled ~4.4× (45.4 → 198.3 ms avg): the
+      queue is in Node, not in Postgres. Reported by Phases 2, 5, 6 and 7 and
+      changed by none. *Minimum change if ever approved: set `max` in
+      `pool.js`.* **This is an architecture and future-scaling decision, not a
+      Phase 8 fix** — pool sizing is approval-gated, and a number picked without
+      re-measuring against the hosted database would be a guess. Any change must
+      be re-benchmarked, because every recorded number above was measured at 10.
+- [ ] **F-3 — drop the redundant `booking_seats` index.** Two indexes cover
+      identical columns: `booking_seats_show_id_seat_id_idx` (non-unique,
+      Phase 1.2) and `booking_seats_show_id_seat_id_key` (**unique**, Phase 2.4's
+      guarantee). `pg_stat_user_indexes` shows the planner using the non-unique
+      one for the whole-show availability path (4,627 scans) and the unique one
+      for the scoped broadcast path (8); **both are maintained on every insert**.
+      `002_unique_booking_seats.sql` already recorded this as deliberate and
+      deferred. *Minimum change if ever approved: a migration dropping the
+      non-unique index.* Schema maintenance, approval-gated — **no migration
+      `005` was created and no migration file was touched**. The unique
+      constraint is a protected Phase 2 artefact (`CLAUDE.md` §10) and must not
+      be touched.
 
 ---
 
@@ -101,7 +224,41 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
 
 - [ ] **Optimistic selection with rollback** (if cut from Phase 6) — including
       correct handling of out-of-order responses
-- [ ] **rAF-batched WebSocket updates** — 50 seat changes → 1 repaint
+- [x] **rAF-batched WebSocket updates** — built in Phase 6.4 and shipping behind
+      `VITE_SEAT_UPDATE_MODE=batched|immediate`, both paths permanent.
+      **The measurement is PARKED, and no ratio is published.** What is
+      established: message delivery was **lossless in both halves** (4,978
+      broadcasts emitted and 4,978 received un-batched; 4,772 and 4,772
+      batched), `immediate` performs **exactly one flush per message**, and
+      batching demonstrably collapses thousands of messages into tens of flushes
+      (4,772 messages → **14** flushes). What is **not** established: the
+      display-rate rAF cadence those flushes were taken against — the tab
+      measured **24.1 Hz idle** against a 59 Hz panel, so the flush count is not
+      a display-rate result and **no flush ratio is claimed anywhere in this
+      repository**. Re-attempting it requires an environment *demonstrated* to
+      sustain ~59 Hz under the load, measured before and during the run —
+      realistically a non-WSL host. `docs/phases/phase-7-benchmarks.md` §5.
+- [ ] **F-1 — a hold you own from another client renders as taken until you
+      refresh.** The server broadcasts every hold as `held` to the whole room,
+      while `GET /seatmap` reports a hold back to its *owner* as `available`. The
+      client's compensating guard knows only the holds **this tab** took, so a
+      hold owned by your account but taken elsewhere — a second tab, another
+      device — renders dark and disabled until the next refetch. Reproduced
+      deterministically in Phase 8 (M1); **low severity**: it self-corrects on
+      reload, and the owner can still re-take the seat because a same-owner
+      re-acquire refreshes the key rather than refusing it.
+      **The Phase 6/7 sightings were a test-methodology artifact** — the load
+      generator authenticated as `demo@show-rush.dev`, the same account the
+      browser was signed in as, so k6's holds arrived as `held` for seats that
+      browser had never held. Running the browser on a separate account removes
+      the contradiction entirely: socket and refetch agree.
+      **This is not a WebSocket/HTTP delivery race.** That hypothesis was tested
+      directly and **disproved** — across 25 trials the frame arrived *after* the
+      HTTP 201 every time (0/25 before). Do not resurrect it.
+      *If ever fixed:* the guard would have to be keyed on the account rather
+      than on this tab's own holds — which means the client needs to know which
+      holds are its user's, not just its own. Not attempted, and no fix was
+      applied in Phase 8.
 - [ ] **Refresh-proof countdown** synced to server time via offset estimation,
       never `Date.now()`
 - [ ] **Conflict UX** — what the user sees when a seat in their selection gets
@@ -134,8 +291,32 @@ if you specifically want a fuller demo video.
 Be able to state these out loud. Knowing your own gaps reads as seniority;
 being surprised by them reads as the opposite.
 
-- **Single instance.** Holds and bookings are correct, but WebSocket updates
-  won't fan out across instances without Redis pub/sub.
+- **Multi-instance works locally; only a single instance is deployed.**
+  WebSocket updates fan out across processes over Redis pub/sub, verified at
+  exactly one frame per watcher per change, and three instances run behind nginx
+  under `docker compose --profile multi`. `render.yaml` is untouched, so the
+  deployed service is still one process. Without Redis the fan-out degrades to
+  local-only — the instance that made the change still tells its own sockets,
+  other instances hear nothing.
+- **F-4 — live updates cost hold throughput, and the number is known.** Measured
+  in Phase 7 on the same hold workload with watchers varied: **~499/s with 0
+  watchers · ~373/s with 1 · ~238/s with 50** (−25.2% and −52.4%), hold latency
+  54.6 → 75.8 → 117.4 ms avg. One watcher costs a quarter of hold throughput,
+  because each seat change pays a scoped query plus a Redis `MGET` once
+  regardless of room size; the further drop at 50 is per-socket fan-out. This is
+  a **measured architectural trade-off, not a defect** — the hub's early return
+  when nobody is watching was doing substantial work. Deferred as documented; no
+  change is recommended without deciding what to trade for it.
+  **Superseded in part by the multi-instance work above: that early return no
+  longer exists**, because an instance cannot know whether another instance has
+  a watcher. The three figures here were measured with it in place and are kept
+  as the record of that code. What replaced it was measured at 0 watchers only
+  (393.4/s on the same host topology); **the watcher-varied table has not been
+  re-run against the current code.**
+- **Only Phase 2 is deployed.** `main` and `origin/main` are at `692ffcf`;
+  Phases 3–7 are nine unmerged commits on `feat/benchmarks`, and the client has
+  never been deployed. Merging and deploying are separate decisions and neither
+  has been taken.
 - **Benchmarks measured locally**, not on production hardware. The before/after
   ratio is the meaningful part; absolute numbers would differ on a real host.
 - **Mock payment provider** (unless P1 is done). Idempotency is real and tested;

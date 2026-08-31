@@ -16,10 +16,46 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? '',
   jwtSecret: process.env.JWT_SECRET ?? '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
+  // The exact origin the browser client is served from. Empty means no browser
+  // client is allowed through CORS at all, which is the safe default.
+  clientOrigin: process.env.CLIENT_ORIGIN ?? '',
   // Defaults to 'safe' so that an unset variable can never deploy the racy
   // booking path. Enabling 'naive' is always a deliberate act.
   bookingMode: (process.env.BOOKING_MODE ?? 'safe').trim().toLowerCase(),
+  // Phase 9 M2. Which instance wrote a log line. Empty is normal for a single
+  // process — observability.js falls back to the pid — and it earns its keep in
+  // M3, where several instances write to the same place.
+  instanceId: (process.env.INSTANCE_ID ?? '').trim(),
+  // Module 6.2. How long a booking may sit 'pending' before the sweep expires
+  // it and gives its seats back. Must exceed the hold TTL — reconcileService
+  // asserts that, where holdService's constant is importable without a cycle.
+  pendingBookingTtlSeconds: intFromEnv(process.env.PENDING_BOOKING_TTL_SECONDS, 900),
+  // How often the in-process sweep runs. 0 disables the interval entirely while
+  // leaving `npm run reconcile` available — which is how a Phase 2 or Phase 5
+  // benchmark guarantees nothing mutated bookings underneath it.
+  reconcileIntervalSeconds: intFromEnv(process.env.RECONCILE_INTERVAL_SECONDS, 60),
+  // How many hold requests one signed-in user may make per window. The limit is
+  // per user rather than per IP, because the thing being prevented is one
+  // account holding a whole screen, and an IP is neither an account nor stable
+  // behind a proxy.
+  //
+  // 0 disables the limiter entirely, exactly as RECONCILE_INTERVAL_SECONDS=0
+  // disables the sweep — and for the same reason: a hold benchmark drives
+  // hundreds of requests a second as a single user, so a limiter left on would
+  // be measuring itself rather than the hold path.
+  holdRateLimit: intFromEnv(process.env.HOLD_RATE_LIMIT, 30),
+  holdRateWindowSeconds: intFromEnv(process.env.HOLD_RATE_WINDOW_SECONDS, 60),
 };
+
+// NaN rather than the fallback for a malformed value: an unset variable means
+// "use the default", but 'sixty' means somebody tried to configure this and
+// got it wrong. Silently defaulting would hide that, and assertReconcileConfig
+// turns it into a refusal to start.
+function intFromEnv(value, fallback) {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : Number.NaN;
+}
 
 // Unlike the connection strings, a missing signing secret is fatal: signing
 // with an empty or defaulted secret would make every token forgeable, so
@@ -48,6 +84,30 @@ export function assertBookingConfig() {
     throw new Error(
       'BOOKING_MODE=naive must never run with NODE_ENV=production. ' +
         'The naive path double-books by design. See .env.example.',
+    );
+  }
+}
+
+// Module 6.2. The sweep changes booking status on its own schedule, so a
+// misconfigured interval is not a cosmetic problem: a negative or unparseable
+// value would either never run or run continuously. reconcileService calls this
+// at import — the same posture bookingService takes for BOOKING_MODE — so the
+// server and the CLI both refuse to start rather than sweeping wrongly.
+//
+// The "must exceed the hold TTL" rule lives in reconcileService, not here:
+// importing holdService from this module would be a cycle.
+export function assertReconcileConfig() {
+  if (!Number.isInteger(config.pendingBookingTtlSeconds) || config.pendingBookingTtlSeconds <= 0) {
+    throw new Error(
+      'PENDING_BOOKING_TTL_SECONDS must be a positive integer number of seconds. See .env.example.',
+    );
+  }
+
+  // 0 is meaningful here and is not an error: it disables the interval.
+  if (!Number.isInteger(config.reconcileIntervalSeconds) || config.reconcileIntervalSeconds < 0) {
+    throw new Error(
+      'RECONCILE_INTERVAL_SECONDS must be a non-negative integer number of seconds, ' +
+        'where 0 disables the periodic sweep. See .env.example.',
     );
   }
 }
