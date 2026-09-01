@@ -45,6 +45,22 @@ export const config = {
   // be measuring itself rather than the hold path.
   holdRateLimit: intFromEnv(process.env.HOLD_RATE_LIMIT, 30),
   holdRateWindowSeconds: intFromEnv(process.env.HOLD_RATE_WINDOW_SECONDS, 60),
+  // BACKLOG.md P2 — the virtual waiting room, per show.
+  //
+  // A list of show ids rather than a switch: a room on every show would
+  // throttle the quiet ones for nothing. Empty — the default — means no show
+  // has one, so every existing benchmark, test and demo is untouched.
+  waitingRoomShows: (process.env.WAITING_ROOM_SHOWS ?? '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean),
+  // How many people the room lets through per minute, and how many it admits
+  // the instant a queue opens so a quiet show never makes anyone wait.
+  waitingRoomRatePerMinute: intFromEnv(process.env.WAITING_ROOM_RATE_PER_MINUTE, 60),
+  waitingRoomInitialAdmit: intFromEnv(process.env.WAITING_ROOM_INITIAL_ADMIT, 60),
+  // A ticket outlives a long wait but not the visitor's session. Expiry is not
+  // an error: the holder simply joins again.
+  waitingRoomTicketTtlSeconds: intFromEnv(process.env.WAITING_ROOM_TICKET_TTL_SECONDS, 1800),
 };
 
 // NaN rather than the fallback for a malformed value: an unset variable means

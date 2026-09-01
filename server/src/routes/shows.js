@@ -7,6 +7,12 @@ import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from '../services/availabilityService.js';
 import { getShowWithScreen, seatIdsOnScreen } from '../services/catalogService.js';
 import { acquireHolds, getHoldOwner, getHoldTtl, releaseHolds } from '../services/holdService.js';
+import {
+  joinQueue,
+  requireAdmission,
+  ticketStatus,
+  waitingRoomEnabled,
+} from '../services/waitingRoomService.js';
 
 export const showsRouter = Router();
 
@@ -51,11 +57,65 @@ async function requireSeatsOnScreen(screenId, seatIds) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Virtual waiting room — BACKLOG.md P2.
+//
+// Two endpoints and nothing else: join, and ask where you are. The room gates
+// hold creation below and nothing further up — browsing the catalogue and
+// reading a seat map stay open, because queueing someone to look at a page
+// protects nothing.
+// ---------------------------------------------------------------------------
+
+// The token identifies a place in a queue, not a person, so it travels in a
+// header rather than the session: a visitor may sign in after queueing, and
+// their place must survive that.
+function queueToken(req) {
+  const header = req.get('X-Queue-Token');
+  return typeof header === 'string' && header.trim() !== '' ? header.trim() : null;
+}
+
+showsRouter.post('/:id/queue', async (req, res) => {
+  const found = await requireShow(req.params.id);
+
+  if (!waitingRoomEnabled(found.show.id)) {
+    // Answered rather than 404'd: a client should be able to ask any show and
+    // be told plainly that it has no room, instead of guessing from an error.
+    res.json({ queue: { enabled: false, admitted: true, position: 0 } });
+    return;
+  }
+
+  const queue = await joinQueue({ showId: found.show.id, token: queueToken(req) });
+  res.status(201).json({ queue: { enabled: true, ...queue } });
+});
+
+showsRouter.get('/:id/queue', async (req, res) => {
+  const found = await requireShow(req.params.id);
+
+  if (!waitingRoomEnabled(found.show.id)) {
+    res.json({ queue: { enabled: false, admitted: true, position: 0 } });
+    return;
+  }
+
+  const status = await ticketStatus({ showId: found.show.id, token: queueToken(req) });
+
+  // An unknown or expired ticket is not an error — it is simply not a place in
+  // the queue, and the holder joins again.
+  if (!status) {
+    throw new HttpError(404, 'NOT_FOUND', 'No queue ticket for this show');
+  }
+
+  res.json({ queue: { enabled: true, ...status } });
+});
+
 // Backlog M4. Creation only: releasing a hold gives seats back, and rate
 // limiting the way out of a mistake would be the wrong rule.
 showsRouter.post('/:id/holds', requireAuth, rateLimitHolds, async (req, res) => {
   const found = await requireShow(req.params.id);
   const seatIds = seatIdList((req.body ?? {}).seat_ids);
+
+  // The waiting room gates entry to the hold path, before any seat work. A
+  // no-op for a show without a room, which is every show by default.
+  await requireAdmission({ showId: found.show.id, token: queueToken(req) });
 
   await requireSeatsOnScreen(found.screen.id, seatIds);
 
