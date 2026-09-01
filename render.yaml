@@ -5,7 +5,19 @@ services:
     plan: free
     region: singapore
     buildCommand: npm ci
-    startCommand: npm start
+    # Migrations run here, not in buildCommand: a build-time migration advances
+    # the schema even when the deploy then fails to boot, leaving the database
+    # ahead of the code that is actually serving. The runner is idempotent —
+    # already-applied files are skipped — so a restart or a wake from sleep
+    # costs one query and logs 'skipped'.
+    #
+    # `&&` is the safety: migrate.js exits non-zero on a failed migration, which
+    # stops the app starting against a schema it does not match. Refusing to
+    # start is the better failure.
+    #
+    # Not preDeployCommand, which would be the natural home for this: Render
+    # does not offer it on the free instance type this service runs on.
+    startCommand: npm run migrate && npm start
     healthCheckPath: /
     envVars:
       # Pinned to match .nvmrc and package.json engines.
@@ -13,5 +25,19 @@ services:
         value: 22.23.2
       - key: NODE_ENV
         value: production
+      # The reconciliation sweep is declared rather than left to its default of
+      # 60 seconds. 0 disables the in-process interval; `npm run reconcile`
+      # still runs it by hand.
+      #
+      # Off for the first deploy on purpose. The sweep mutates booking rows, and
+      # the Phase 6/7 code has never run against Neon or Upstash — enabling an
+      # unattended writer there before it has been exercised once is the risk
+      # phase-8-closeout.md R-2 named. The cost while it is off: a pending
+      # booking never expires, so its seats are not reclaimed automatically.
+      # Set this to 60 once the sweep has been verified against Neon.
+      - key: RECONCILE_INTERVAL_SECONDS
+        value: 0
       # DATABASE_URL and REDIS_URL are set in Module 0.6, in the Render
       # dashboard — never committed. See .env.example for their shapes.
+      # JWT_SECRET is set there too; assertAuthConfig() refuses to start without
+      # it, so a missing value fails the deploy rather than degrading it.
