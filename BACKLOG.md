@@ -15,14 +15,23 @@ your own boundaries.
 
 Small, cheap, and their absence looks careless.
 
-- [ ] **Deployed demo link that actually works.** Free tiers sleep. Test the
-      cold-start path; if it takes 40s, note it in the README.
-- [ ] **Seeded demo data.** A recruiter opening an empty app sees a broken app.
-      Ship with movies, shows, and a partially-booked seat map.
+- [x] **Deployed demo link that actually works.** Free tiers sleep. Test the
+      cold-start path; if it takes 40s, note it in the README. Re-verified
+      2026-08-31: `/health` **200 in 23.6 s** cold — inside the 23.2–27.0 s the
+      README already documents — and 0.20 s warm. `/api/movies`,
+      `/api/movies/:id/shows` and `/api/shows/:id/seatmap` all answer; an unknown
+      show is a 404; the demo account logs in with 200 and a wrong password is
+      refused with 401. **It serves the Phase 2 build**, so it demonstrates the
+      catalogue rather than this repository — see the status note below.
+- [x] **Seeded demo data.** A recruiter opening an empty app sees a broken app.
+      Ship with movies, shows, and a partially-booked seat map. Verified on the
+      deployed database 2026-08-31: **5 movies**, 4 shows on movie 1, and show 1
+      returning **160 seats, 9 booked / 151 available** across 64 silver, 64 gold
+      and 32 platinum — a genuinely partially-booked map, not an empty one.
 - [x] **Demo account credentials in the README.** Don't make anyone register.
-      Present near the top of the README, with the caveat that the link and
-      credentials were last exercised on 2026-08-18 against the deployed Phase 2
-      build — the credentials are documented, the deployment is not re-verified.
+      Present near the top of the README, and re-exercised against the deployed
+      Phase 2 build on 2026-08-31: login returns 200 with the user and a token,
+      no `password_hash` in the payload, and a wrong password returns 401.
 - [x] **README benchmark table filled with YOUR measured numbers.** Done in
       Phase 7.4 and carried into the README: Phase 2's before/after, hold
       throughput, availability latency, replay, broadcast cost and socket
@@ -39,8 +48,13 @@ Small, cheap, and their absence looks careless.
       thirteen in `config/env.js` and all three `VITE_` variables the client
       reads are listed, each with a comment. Every sensitive value —
       `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET` — ships empty.
-- [ ] **Screenshot or 30s GIF in the README.** Most people never open the demo.
-      **Still open:** the repository contains no image assets at all.
+- [x] **Screenshot or 30s GIF in the README.** Most people never open the demo.
+      `docs/images/seat-map.jpg` — the canvas seat map with its three price
+      tiers, dimmed booked seats and aisles, captured 2026-08-31 from the
+      production client build served by `vite preview` against a local API.
+      A still, not a GIF: it shows what the app looks like, not what it does.
+      It is also a screenshot of the **local** stack — the deployed link has no
+      client — and the caption says so rather than implying otherwise.
 - [ ] **Rotate the Neon database password.** `docs/phases/phase-6-reconciliation.md`
       §9 records that a `NEON_DATABASE_URL` in the local `.env` was printed in
       full, password included, to a session transcript. `.env` is gitignored and
@@ -50,11 +64,18 @@ Small, cheap, and their absence looks careless.
       dropped from `.env` entirely. A manual security task, not implementation
       work; no credential value belongs in this file.
 
-> **Status, 2026-08-22.** The two unticked demo items are unticked on purpose.
-> The deployed link serves `main`, which is still the Phase 2 merge (`692ffcf`)
-> — Phases 3–7 are unmerged — so it has no holds, no payments, no live updates
-> and no client. It was last exercised 2026-08-18 and **was not re-tested in
-> Phase 8**, so "actually works" is recorded as unverified rather than assumed.
+> **Status, 2026-08-31.** The demo items above are ticked against **what is
+> actually deployed**, which is not this codebase. Phases 3–8 and the backlog
+> work are merged into local `main` (`9aab673`, a `--no-ff` merge), but
+> **nothing has been pushed**: `origin/main` is still the Phase 2 merge
+> (`692ffcf`), so the deployed link serves Phase 2 — no holds, no payments, no
+> live updates, and no client at all.
+>
+> So read those two ticks narrowly. The link works, the cold start is inside the
+> documented range, and the data is seeded and partially booked — twice measured,
+> 24.2 s and 23.6 s cold on two separate runs. What is **not** true is that the
+> demo shows the system this repository describes. That needs a push and a
+> deploy, which are separate decisions and have not been taken.
 
 ---
 
@@ -109,6 +130,12 @@ components. `docs/phases/phase-9-improvements.md`.
       was taken before the draw loop was changed to batch seats by appearance,
       and the measuring tab became unavailable before it could be re-run. No
       frame-rate claim is made anywhere. This box stays unticked until it is.
+      **Re-attempted 2026-08-31 and refused at the gate**: in a browser driven
+      by the automation extension the tab reports `visibilityState: "hidden"`
+      and `requestAnimationFrame` is suspended outright — a bounded probe
+      counted **0 frames in 2 s**, and the canvas had drawn nothing. Any number
+      taken there would measure the suspension. This needs a foreground,
+      human-driven window; it is not obtainable from an automated session.
 
 > The Phase 3 baseline **was** recorded, so this work is claimable: 5,000
 > `SeatButton` re-renders per click in all 10 trials, click-to-paint median
@@ -222,8 +249,14 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
 
 ## P3 — Frontend depth
 
-- [ ] **Optimistic selection with rollback** (if cut from Phase 6) — including
-      correct handling of out-of-order responses
+- [x] **Optimistic selection with rollback** (if cut from Phase 6) — including
+      correct handling of out-of-order responses. **It was not cut**: Module 6.5
+      built it. The click applies immediately, the seat renders as pending until
+      the server agrees, and a refusal rolls it back. Out-of-order responses are
+      handled by a per-seat sequence counter in `useSeatSelection` — an answer
+      may only act on its own seat, and only while it is still the newest word
+      on it, so a rollback for a click the visitor has since undone cannot undo
+      the one they meant.
 - [x] **rAF-batched WebSocket updates** — built in Phase 6.4 and shipping behind
       `VITE_SEAT_UPDATE_MODE=batched|immediate`, both paths permanent.
       **The measurement is PARKED, and no ratio is published.** What is
@@ -259,15 +292,65 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
       than on this tab's own holds — which means the client needs to know which
       holds are its user's, not just its own. Not attempted, and no fix was
       applied in Phase 8.
-- [ ] **Refresh-proof countdown** synced to server time via offset estimation,
-      never `Date.now()`
-- [ ] **Conflict UX** — what the user sees when a seat in their selection gets
-      taken. Silent removal is a bug; a blocking modal is hostile.
-- [ ] **Seat recommendation** — "best N together": contiguous-run search with a
+- [x] **Refresh-proof countdown** synced to server time via offset estimation,
+      never `Date.now()`. Refresh-proof already: the seat ids come back from
+      `sessionStorage` and their validity from the server, which is also where
+      the remaining seconds come from. What was added is the offset: the
+      server's TTL is pinned to a `performance.now()` reading and every tick
+      recomputes the remainder from that pair, instead of subtracting one per
+      timer. Timers always fire late, and subtraction kept the error — always in
+      the direction that flattered the client. `performance.now()` cannot be
+      moved by NTP, a clock change or a DST jump; `Date.now()` appears nowhere
+      in the path.
+- [x] **Conflict UX** — what the user sees when a seat in their selection gets
+      taken. Silent removal is a bug; a blocking modal is hostile. The seat was
+      already dropped from the total the moment its status changed — correct,
+      and silent, which was the bug. `useSeatSelection` now names those seats,
+      the page announces them by row and number in a dismissible `role="status"`
+      line, and forgets them only after they have been named. Not a dialog: the
+      visitor keeps whatever they were doing.
+      **Seats this tab holds, and seats still confirming, are excluded** — the
+      room is told about every hold, so this tab's own broadcast can arrive
+      before its held list catches up, and announcing that would accuse the
+      visitor of losing a seat they are holding.
+- [x] **Seat recommendation** — "best N together": contiguous-run search with a
       centrality score. Small, pure DSA, genuinely useful.
-- [ ] **Accessibility on canvas** — canvas is invisible to screen readers.
+      `client/src/seatmap/recommend.js`, pure and with no React or DOM in it, so
+      it is tested exhaustively without a browser — **11 unit tests**. Runs are
+      maximal sequences of consecutive *seat numbers* within a row, never array
+      neighbours, so a hole in a row cannot produce a "run" the group would have
+      to climb over. Every window of the requested size is scored on distance
+      from the ideal depth (0.65 of the way back) plus distance from the row's
+      own centre, and the best is applied through the same `toggle` a click
+      uses — so it takes holds and obeys the six-seat ceiling like any other
+      selection. Verified in the browser on Audi 1: asked for 2, returned
+      **G8–G9** — row G is two thirds back of ten rows, 8–9 the centre of
+      sixteen.
+- [x] **Accessibility on canvas** — canvas is invisible to screen readers.
       Parallel keyboard navigation + ARIA live announcements. Rare; signals care.
-- [ ] **Mobile layout** for the seat map — pinch-zoom, touch targets
+      The canvas takes focus, `role="application"` so the arrows reach it rather
+      than the screen reader's own navigation, and a cursor moves over the same
+      geometry the pointer hit-tests — reusing the hover ref, so the draw loop
+      was not touched. Arrows move, Home and End reach the ends of a row, Enter
+      and Space toggle, and the view follows a cursor that walks off-screen.
+      Every move is announced in a visually-hidden `aria-live="polite"` region.
+      Verified in the browser: focus announces the cursor, blur clears it,
+      arrows clamp at the edges, Enter selected B1 (2 seats → 3, ₹640 → ₹840)
+      and deselected it again, and Space on a booked seat did nothing.
+      **This is a parallel, not an equivalent.** There is one focusable element
+      rather than one per seat, so a screen reader's element-by-element browsing
+      still finds nothing to walk; `VITE_SEAT_RENDERER=dom` remains the fuller
+      path. **Not tested with an actual screen reader** — only the ARIA surface
+      and keyboard behaviour were verified.
+- [ ] **Mobile layout** for the seat map — pinch-zoom, touch targets.
+      **Written but NOT verified, so this box stays unticked.** Two-pointer
+      pinch-to-zoom about the midpoint is implemented in `SeatCanvas`, a second
+      finger cancels any drag or tap in progress, lifting one finger of a pinch
+      cannot register as a tap, and `@media (pointer: coarse)` raises DOM seat
+      targets to 40px and buttons to 44px. None of it has been exercised on
+      touch hardware — this environment has no touch input, and synthetic
+      pointer events would only test that my own code calls itself. Verify on a
+      real device before ticking.
 
 ---
 
@@ -313,10 +396,13 @@ being surprised by them reads as the opposite.
   as the record of that code. What replaced it was measured at 0 watchers only
   (393.4/s on the same host topology); **the watcher-varied table has not been
   re-run against the current code.**
-- **Only Phase 2 is deployed.** `main` and `origin/main` are at `692ffcf`;
-  Phases 3–7 are nine unmerged commits on `feat/benchmarks`, and the client has
-  never been deployed. Merging and deploying are separate decisions and neither
-  has been taken.
+- **Only Phase 2 is deployed.** Merged, not shipped: local `main` is at
+  `9aab673` and carries Phases 3–8 plus the backlog work, while `origin/main`
+  is still `692ffcf`, which is what the demo serves. The client has never been
+  deployed — `render.yaml` builds and starts the server only. Deploying remains
+  a separate decision that has not been taken; when it is, `render.yaml` now
+  applies migrations `003` and `004` before the app starts, and leaves the
+  reconciliation sweep disabled until it has been verified against Neon.
 - **Benchmarks measured locally**, not on production hardware. The before/after
   ratio is the meaningful part; absolute numbers would differ on a real host.
 - **Mock payment provider** (unless P1 is done). Idempotency is real and tested;

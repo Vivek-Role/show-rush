@@ -8,6 +8,7 @@ import { BookingResult } from '../booking/BookingResult.jsx';
 import { BookingSummary } from '../booking/BookingSummary.jsx';
 import { Legend } from '../seatmap/Legend.jsx';
 import { SeatMap } from '../seatmap/SeatMap.jsx';
+import { recommendSeats } from '../seatmap/recommend.js';
 import { buildSeatIndex } from '../seatmap/seatIndex.js';
 import { useSeatEvents } from '../seatmap/useSeatEvents.js';
 import { useSeatHolds } from '../seatmap/useSeatHolds.js';
@@ -92,6 +93,41 @@ export function SeatMapPage() {
   const selection = useSeatSelection({ seats, maxSeats: MAX_SEATS });
   const { toggle, selectedIds, isSelected, limitReached, clear } = selection;
   const { beginPending, settlePending, isCurrent } = selection;
+  const { takenSeats, forget } = selection;
+
+  // BACKLOG.md P3 — conflict UX. Announced, not modal: a dialog would block a
+  // visitor who can see perfectly well what happened, and silence would leave
+  // them wondering where their seat went.
+  const [conflict, setConflict] = useState(null);
+
+  useEffect(() => {
+    if (takenSeats.length === 0) return;
+
+    // A seat of our own can read as 'held' for a moment: the room is told about
+    // every hold, and this tab's own broadcast can arrive before heldIds has
+    // caught up with it. Announcing that as a conflict would accuse the visitor
+    // of losing a seat they are holding — the F-1 symptom, turned into a lie.
+    // Seats we hold, and seats still confirming, are therefore not conflicts.
+    const conflicted = takenSeats.filter(
+      (seat) => !heldRef.current.has(seat.id) && !selection.isPending(seat.id),
+    );
+
+    if (conflicted.length === 0) return;
+
+    const names = conflicted.map((seat) => `${seat.row_label}${seat.seat_number}`);
+    const ids = conflicted.map((seat) => seat.id);
+
+    setConflict(
+      names.length === 1
+        ? `Seat ${names[0]} was taken by someone else and has been removed from your selection.`
+        : `Seats ${names.join(', ')} were taken by someone else and have been removed from your selection.`,
+    );
+
+    // Dropped only after the message is composed, so the seats are named before
+    // they are forgotten. They already stopped counting towards the total the
+    // moment their status changed; this is the bookkeeping catching up.
+    forget(ids);
+  }, [takenSeats, forget, selection]);
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedSeats = useMemo(
@@ -247,6 +283,29 @@ export function SeatMapPage() {
     navigate(location.pathname, { replace: true, state: null });
   }, [data, restoreIds, toggle, navigate, location.pathname, user, hold, load]);
 
+  // BACKLOG.md P3 — "best N together". The search is pure and lives in
+  // recommend.js; this only asks it for as many seats as the visitor has
+  // already chosen (or a pair to start with) and applies the answer through the
+  // same toggle every click uses, so a recommendation takes holds and obeys the
+  // six-seat ceiling exactly like a manual selection.
+  const recommend = useCallback(() => {
+    const wanted = Math.min(Math.max(selection.count || 2, 1), MAX_SEATS);
+    const rowOrder = data?.screen?.layout?.rows?.map((row) => row.label);
+    const picked = recommendSeats(seats, { count: wanted, rowOrder });
+
+    if (picked.length === 0) {
+      setBookingError(`No ${wanted} seats are free together on this show.`);
+      return;
+    }
+
+    const chosen = new Set(picked);
+    // Anything currently selected that is not in the recommendation is given
+    // back first, so the result is the recommendation rather than a merge of it
+    // with whatever was there before.
+    for (const seatId of selectedIds) if (!chosen.has(seatId)) void onSeatToggle(seatId);
+    for (const seatId of picked) if (!isSelected(seatId)) void onSeatToggle(seatId);
+  }, [seats, selection.count, data, selectedIds, isSelected, onSeatToggle]);
+
   const goToLogin = useCallback(() => {
     navigate('/login', { state: { from: location.pathname, seatIds: selectedIds } });
   }, [navigate, location.pathname, selectedIds]);
@@ -371,6 +430,24 @@ export function SeatMapPage() {
       <p>
         {TIME_FORMAT.format(new Date(data.show.starts_at))} · {data.screen.name} ·{' '}
         {data.screen.cinema_name}
+      </p>
+
+      {/* Polite, not assertive: the visitor is told, and keeps whatever they
+          were doing. role="status" is what makes a screen reader announce it
+          without stealing focus. */}
+      {conflict ? (
+        <p className="seatmap-conflict" role="status">
+          {conflict}{' '}
+          <button type="button" onClick={() => setConflict(null)}>
+            Dismiss
+          </button>
+        </p>
+      ) : null}
+
+      <p className="seatmap-suggest">
+        <button type="button" onClick={recommend}>
+          Suggest {Math.min(Math.max(selection.count || 2, 1), MAX_SEATS)} together
+        </button>
       </p>
 
       <SeatMap

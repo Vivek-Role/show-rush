@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ROW_LABEL_WIDTH, SCREEN_BAND, buildGeometry } from './geometry.js';
 import { buildQuadtree, describeQuadtree, queryPoint, queryRect } from './quadtree.js';
 import { isSelectable } from './seatIndex.js';
@@ -7,6 +7,7 @@ import {
   fitToBounds,
   screenToWorld,
   visibleWorldRect,
+  worldToScreen,
   zoomAt,
 } from './viewport.js';
 
@@ -152,6 +153,41 @@ export function SeatCanvas({
   // Reused across frames. A fresh array of visible cells every frame is exactly
   // the per-frame garbage that shows up as stutter while panning.
   const visibleRef = useRef([]);
+
+  // BACKLOG.md P3 — canvas accessibility.
+  //
+  // A canvas has no seat elements, so there is nothing for a screen reader to
+  // walk and nothing for Tab to land on. What follows is the parallel: the
+  // canvas itself takes focus, arrow keys move a cursor over the same geometry
+  // the pointer uses, and every move is announced in a live region. It is not
+  // equivalent to the DOM renderer — there is still one focusable element
+  // rather than 5,000, so a screen reader's own element navigation has nothing
+  // to find — but it makes the map operable and legible without a mouse.
+  //
+  // The cursor is deliberately the SAME ref the pointer hover uses, so the
+  // existing draw path highlights it with no change to the render loop.
+  const cursorRef = useRef(null);
+  const [announcement, setAnnouncement] = useState('');
+
+  // Rows of cells in layout order, which is what arrow keys move through.
+  // Derived from geometry, so it inherits the aisle and gap handling and cannot
+  // disagree with what is drawn.
+  const grid = useMemo(() => {
+    const rows = [];
+    const byLabel = new Map();
+
+    for (const cell of geometry.cells) {
+      let row = byLabel.get(cell.rowLabel);
+      if (!row) {
+        row = { label: cell.rowLabel, cells: [] };
+        byLabel.set(cell.rowLabel, row);
+        rows.push(row);
+      }
+      row.cells.push(cell);
+    }
+
+    return rows;
+  }, [geometry]);
 
   const draw = useCallback(() => {
     frameRef.current = null;
@@ -433,6 +469,153 @@ export function SeatCanvas({
     if (stats) stats.quadtree = describeQuadtree(tree);
   }, [tree]);
 
+  // Bring a cell into view without changing zoom, so a keyboard cursor can walk
+  // off the visible edge and the map follows it. Only translates when the cell
+  // is actually outside, so ordinary moves do not shift the view under the
+  // visitor.
+  const revealCell = useCallback(
+    (cell) => {
+      const { width, height } = sizeRef.current;
+      if (!width || !height) return;
+
+      const view = viewRef.current;
+      const topLeft = worldToScreen(view, cell.x, cell.y);
+      const bottomRight = worldToScreen(view, cell.x + cell.w, cell.y + cell.h);
+
+      const margin = 24;
+      let dx = 0;
+      let dy = 0;
+
+      if (topLeft.x < margin) dx = margin - topLeft.x;
+      else if (bottomRight.x > width - margin) dx = width - margin - bottomRight.x;
+
+      if (topLeft.y < margin) dy = margin - topLeft.y;
+      else if (bottomRight.y > height - margin) dy = height - margin - bottomRight.y;
+
+      if (dx === 0 && dy === 0) return;
+
+      viewRef.current = centreWithin(
+        { scale: view.scale, tx: view.tx + dx, ty: view.ty + dy },
+        geometry.bounds,
+        width,
+        height,
+      );
+    },
+    [geometry],
+  );
+
+  // What a screen reader is told when the cursor lands on a cell. Says the seat
+  // and its state, or that the cell is empty — an aisle gap is information too.
+  const announce = useCallback((cell) => {
+    if (!cell) {
+      setAnnouncement('');
+      return;
+    }
+
+    const seat = propsRef.current.seatAt.get(cell.key);
+
+    if (!seat) {
+      setAnnouncement(`Row ${cell.rowLabel}, position ${cell.seatNumber}, no seat`);
+      return;
+    }
+
+    const selected = propsRef.current.isSelected?.(seat.id) ? ', selected' : '';
+    const pending = propsRef.current.isPending?.(seat.id) ? ', confirming' : '';
+    const state = isSelectable(seat.status) ? 'available' : seat.status;
+
+    setAnnouncement(
+      `Row ${seat.row_label}, seat ${seat.seat_number}, ${seat.tier}, ${state}${selected}${pending}`,
+    );
+  }, []);
+
+  // Keyboard navigation. Arrow keys move the cursor, Enter and Space toggle,
+  // Home and End jump to the ends of the row.
+  const onKeyDown = useCallback(
+    (event) => {
+      if (grid.length === 0) return;
+
+      const { key } = event;
+      const navigating =
+        key === 'ArrowLeft' ||
+        key === 'ArrowRight' ||
+        key === 'ArrowUp' ||
+        key === 'ArrowDown' ||
+        key === 'Home' ||
+        key === 'End';
+
+      if (!navigating && key !== 'Enter' && key !== ' ') return;
+
+      // The map owns these keys once it has focus; letting the page scroll
+      // underneath a moving cursor is what makes canvas keyboard support feel
+      // broken.
+      event.preventDefault();
+
+      const current = cursorRef.current;
+      let rowIndex = current ? grid.findIndex((row) => row.label === current.rowLabel) : 0;
+      if (rowIndex < 0) rowIndex = 0;
+
+      let colIndex = current ? grid[rowIndex].cells.findIndex((c) => c.key === current.key) : 0;
+      if (colIndex < 0) colIndex = 0;
+
+      if (key === 'Enter' || key === ' ') {
+        const cell = current ?? grid[0].cells[0];
+        const seat = propsRef.current.seatAt.get(cell.key);
+
+        // The same refusal the pointer path makes, for the same reason: the
+        // rule lives in useSeatSelection and this only avoids asking.
+        if (!seat || !isSelectable(seat.status)) {
+          announce(cell);
+          return;
+        }
+
+        propsRef.current.onToggle?.(seat.id);
+        // Re-announced after the toggle so the new state is what is read out.
+        setTimeout(() => announce(cell), 0);
+        return;
+      }
+
+      if (key === 'ArrowLeft') colIndex -= 1;
+      else if (key === 'ArrowRight') colIndex += 1;
+      else if (key === 'Home') colIndex = 0;
+      else if (key === 'End') colIndex = grid[rowIndex].cells.length - 1;
+      else if (key === 'ArrowUp') rowIndex -= 1;
+      else if (key === 'ArrowDown') rowIndex += 1;
+
+      rowIndex = Math.max(0, Math.min(grid.length - 1, rowIndex));
+      const row = grid[rowIndex];
+      colIndex = Math.max(0, Math.min(row.cells.length - 1, colIndex));
+
+      const next = row.cells[colIndex];
+      if (!next) return;
+
+      cursorRef.current = next;
+      hoverRef.current = next;
+      revealCell(next);
+      announce(next);
+      schedule();
+    },
+    [grid, announce, revealCell, schedule],
+  );
+
+  // Landing on the map with Tab should say where the cursor is, not leave the
+  // visitor guessing; leaving should clear the highlight.
+  const onFocus = useCallback(() => {
+    const cell = cursorRef.current ?? grid[0]?.cells?.[0];
+    if (!cell) return;
+
+    cursorRef.current = cell;
+    hoverRef.current = cell;
+    revealCell(cell);
+    announce(cell);
+    schedule();
+  }, [grid, announce, revealCell, schedule]);
+
+  const onBlur = useCallback(() => {
+    if (hoverRef.current === cursorRef.current) hoverRef.current = null;
+    setAnnouncement('');
+    schedule();
+  }, [schedule]);
+
   // Pointer handling. Non-passive on wheel because zooming must stop the page
   // from scrolling underneath the map.
   useEffect(() => {
@@ -449,14 +632,61 @@ export function SeatCanvas({
       return queryPoint(tree, world.x, world.y);
     };
 
+    // BACKLOG.md P3 — mobile. Every live pointer, so two fingers can be told
+    // apart. A Map rather than a count because pinch needs both positions.
+    const active = new Map();
+    let pinch = null;
+
+    const pinchState = () => {
+      const [a, b] = [...active.values()];
+      return {
+        distance: Math.hypot(a.x - b.x, a.y - b.y),
+        midX: (a.x + b.x) / 2,
+        midY: (a.y + b.y) / 2,
+      };
+    };
+
     const onPointerDown = (event) => {
       const point = localPoint(event);
+      active.set(event.pointerId, point);
+
+      if (active.size === 2) {
+        // A second finger converts the gesture: whatever the first one was
+        // doing stops, so a pinch cannot also register as a drag or a tap.
+        pressRef.current = null;
+        pinch = pinchState();
+        return;
+      }
+
       pressRef.current = { x: point.x, y: point.y, moved: false };
       canvas.setPointerCapture?.(event.pointerId);
     };
 
     const onPointerMove = (event) => {
       const point = localPoint(event);
+      if (active.has(event.pointerId)) active.set(event.pointerId, point);
+
+      // Pinch to zoom, about the midpoint between the fingers — so the map
+      // grows around what is being pinched rather than around its own centre.
+      if (pinch && active.size === 2) {
+        const next = pinchState();
+
+        if (pinch.distance > 0 && next.distance > 0) {
+          const { width, height } = sizeRef.current;
+          const zoomed = zoomAt(
+            viewRef.current,
+            next.midX,
+            next.midY,
+            next.distance / pinch.distance,
+          );
+          viewRef.current = centreWithin(zoomed, geometry.bounds, width, height);
+          schedule();
+        }
+
+        pinch = next;
+        return;
+      }
+
       const press = pressRef.current;
 
       if (press) {
@@ -495,6 +725,18 @@ export function SeatCanvas({
     };
 
     const onPointerUp = (event) => {
+      active.delete(event.pointerId);
+
+      // Lifting one finger of a pinch must not become a tap on the seat under
+      // the other one. The gesture ends here and the remaining finger is inert
+      // until it is lifted too.
+      if (pinch) {
+        if (active.size < 2) pinch = null;
+        pressRef.current = null;
+        canvas.releasePointerCapture?.(event.pointerId);
+        return;
+      }
+
       const press = pressRef.current;
       pressRef.current = null;
       canvas.releasePointerCapture?.(event.pointerId);
@@ -515,8 +757,14 @@ export function SeatCanvas({
       propsRef.current.onToggle?.(seat.id);
     };
 
-    const onPointerLeave = () => {
+    const onPointerLeave = (event) => {
+      active.delete(event.pointerId);
+      if (active.size < 2) pinch = null;
       pressRef.current = null;
+
+      // The keyboard cursor is not a hover state and must survive the mouse
+      // leaving the canvas.
+      if (hoverRef.current && hoverRef.current === cursorRef.current) return;
 
       if (hoverRef.current) {
         hoverRef.current = null;
@@ -571,17 +819,34 @@ export function SeatCanvas({
       <canvas
         ref={canvasRef}
         className="seatmap__canvas"
-        // A canvas is one opaque image to a screen reader: there are no seat
-        // elements, no focus order and no aria-pressed. Saying so is the honest
-        // thing available here — BACKLOG.md P3 keeps parallel keyboard
-        // navigation as its own deferred item, and until it is built the DOM
-        // renderer is the accessible path.
-        role="img"
-        aria-label={`Seat map, ${seatAt.size} seats. This view is drawn on a canvas and cannot be navigated with a screen reader or keyboard.`}
+        // BACKLOG.md P3. The canvas takes focus and handles the arrow keys
+        // itself, because there are no seat elements for the browser to move
+        // between. role="application" is what tells a screen reader to pass the
+        // arrows through rather than intercepting them for its own navigation.
+        //
+        // This is a parallel to the DOM renderer, not an equivalent: there is
+        // one focusable element here rather than one per seat, so element-by-
+        // element browsing still finds nothing. VITE_SEAT_RENDERER=dom remains
+        // the fuller path.
+        tabIndex={0}
+        role="application"
+        aria-label={`Seat map, ${seatAt.size} seats. Use the arrow keys to move between seats, Enter or Space to select, Home and End for the ends of a row.`}
+        aria-describedby="seatmap-canvas-help"
+        onKeyDown={onKeyDown}
+        onFocus={onFocus}
+        onBlur={onBlur}
       />
-      <p className="seatmap__canvas-note">
-        Drag to pan, scroll to zoom. A keyboard-navigable seat map is available by building the
-        client with <code>VITE_SEAT_RENDERER=dom</code>.
+
+      {/* The spoken half of the canvas. Polite so it never interrupts, and it
+          is the only place a screen reader learns which seat the cursor is on. */}
+      <p className="seatmap__canvas-live" role="status" aria-live="polite">
+        {announcement}
+      </p>
+
+      <p className="seatmap__canvas-note" id="seatmap-canvas-help">
+        Drag or swipe to pan, scroll or pinch to zoom. With the map focused, arrow keys move between
+        seats, Enter or Space selects, and Home and End jump to the ends of a row. A seat map built
+        from real buttons is available with <code>VITE_SEAT_RENDERER=dom</code>.
       </p>
     </div>
   );

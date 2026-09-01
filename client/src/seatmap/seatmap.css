@@ -206,3 +206,57 @@
   padding: 0.15rem 0.4rem;
   border-radius: 0.2rem;
 }
+
+/* BACKLOG.md P3 — the canvas's keyboard and screen-reader surface.
+
+   The live region is visually hidden but never display:none and never
+   hidden: either would take it out of the accessibility tree, which is the
+   one thing it exists to be in. */
+.seatmap__canvas-live {
+  border: 0;
+  clip-path: inset(50%);
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+/* A focused canvas must show where focus is. Without this the keyboard cursor
+   moves inside a control that looks inert. */
+.seatmap__canvas:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* BACKLOG.md P3 — conflict UX. Announced in place, not in a dialog: the
+   visitor keeps whatever they were doing. */
+.seatmap-conflict {
+  background: #fef3c7;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.seatmap-suggest {
+  margin: 0 0 0.75rem;
+}
+
+/* BACKLOG.md P3 — mobile. Touch targets on the DOM renderer: 28px is a
+   comfortable mouse target and an uncomfortable finger one. The canvas is
+   unaffected — it zooms instead. */
+@media (pointer: coarse) {
+  .seat {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
+  .seatmap-conflict button,
+  .seatmap-suggest button {
+    min-height: 44px;
+    padding: 0.5rem 1rem;
+  }
+}

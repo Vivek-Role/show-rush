@@ -44,6 +44,26 @@ export function useSeatSelection({ seats, maxSeats = 6 }) {
   const selectedIds = useMemo(() => selected.map((seat) => seat.id), [selected]);
   const liveIds = useMemo(() => new Set(selectedIds), [selectedIds]);
 
+  // BACKLOG.md P3 — conflict UX.
+  //
+  // A chosen seat that is no longer selectable has been taken by somebody else
+  // while it sat in this visitor's selection. The filter above already stops it
+  // counting, which is correct and is what keeps the total honest — but on its
+  // own that is the silent removal the backlog calls a bug: the seat simply
+  // stops being there, and nothing says why.
+  //
+  // Naming them here is all this hook does. It does not decide what to show or
+  // when to forget them; the page owns that, the same way it owns every other
+  // message. Seats that vanished from the payload entirely are excluded — there
+  // is nothing to name, and a refetch that dropped a row is not a conflict.
+  const takenSeats = useMemo(
+    () =>
+      [...chosenIds]
+        .map((id) => seatById.get(id))
+        .filter((seat) => seat && !isSelectable(seat.status)),
+    [chosenIds, seatById],
+  );
+
   const count = selected.length;
   const limitReached = count >= maxSeats;
 
@@ -121,6 +141,25 @@ export function useSeatSelection({ seats, maxSeats = 6 }) {
     setPendingIds(new Set());
   }, []);
 
+  // Forget seats the visitor has been told about. Separate from clear() because
+  // losing two seats of six must not throw away the other four.
+  const forget = useCallback((ids) => {
+    const dropping = new Set(ids);
+    if (dropping.size === 0) return;
+
+    setChosenIds((current) => {
+      let changed = false;
+      const next = new Set();
+
+      for (const id of current) {
+        if (dropping.has(id)) changed = true;
+        else next.add(id);
+      }
+
+      return changed ? next : current;
+    });
+  }, []);
+
   // ---------------------------------------------------------------------------
   // Module 6.5 — the optimistic bookkeeping.
   //
@@ -165,6 +204,8 @@ export function useSeatSelection({ seats, maxSeats = 6 }) {
     isSelected,
     toggle,
     clear,
+    forget,
+    takenSeats,
     count,
     totalPaise,
     breakdown,
