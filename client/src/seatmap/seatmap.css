@@ -244,19 +244,3 @@
 .seatmap-suggest {
   margin: 0 0 0.75rem;
 }
-
-/* BACKLOG.md P3 — mobile. Touch targets on the DOM renderer: 28px is a
-   comfortable mouse target and an uncomfortable finger one. The canvas is
-   unaffected — it zooms instead. */
-@media (pointer: coarse) {
-  .seat {
-    min-height: 40px;
-    min-width: 40px;
-  }
-
-  .seatmap-conflict button,
-  .seatmap-suggest button {
-    min-height: 44px;
-    padding: 0.5rem 1rem;
-  }
-}

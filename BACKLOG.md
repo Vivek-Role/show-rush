@@ -343,14 +343,16 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
       path. **Not tested with an actual screen reader** — only the ARIA surface
       and keyboard behaviour were verified.
 - [ ] **Mobile layout** for the seat map — pinch-zoom, touch targets.
-      **Written but NOT verified, so this box stays unticked.** Two-pointer
-      pinch-to-zoom about the midpoint is implemented in `SeatCanvas`, a second
-      finger cancels any drag or tap in progress, lifting one finger of a pinch
-      cannot register as a tap, and `@media (pointer: coarse)` raises DOM seat
-      targets to 40px and buttons to 44px. None of it has been exercised on
-      touch hardware — this environment has no touch input, and synthetic
-      pointer events would only test that my own code calls itself. Verify on a
-      real device before ticking.
+      **Written, then removed again rather than shipped unverified.** A
+      two-pointer pinch-to-zoom about the midpoint, a second finger cancelling
+      any drag or tap in progress, and `@media (pointer: coarse)` targets of
+      40px for seats and 44px for buttons were all implemented — and none of it
+      could be exercised, because this environment has no touch input and
+      synthetic pointer events would only prove the code calls itself. Untested
+      gesture handling on the one path that cannot be checked here was not worth
+      carrying, so it was taken back out; the canvas is still single-pointer pan
+      and wheel zoom. The approach is recorded in commit `131f3a2` if it is
+      wanted again, and needs a real device to verify.
 
 ---
 

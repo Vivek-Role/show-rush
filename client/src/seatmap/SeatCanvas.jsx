@@ -632,61 +632,14 @@ export function SeatCanvas({
       return queryPoint(tree, world.x, world.y);
     };
 
-    // BACKLOG.md P3 — mobile. Every live pointer, so two fingers can be told
-    // apart. A Map rather than a count because pinch needs both positions.
-    const active = new Map();
-    let pinch = null;
-
-    const pinchState = () => {
-      const [a, b] = [...active.values()];
-      return {
-        distance: Math.hypot(a.x - b.x, a.y - b.y),
-        midX: (a.x + b.x) / 2,
-        midY: (a.y + b.y) / 2,
-      };
-    };
-
     const onPointerDown = (event) => {
       const point = localPoint(event);
-      active.set(event.pointerId, point);
-
-      if (active.size === 2) {
-        // A second finger converts the gesture: whatever the first one was
-        // doing stops, so a pinch cannot also register as a drag or a tap.
-        pressRef.current = null;
-        pinch = pinchState();
-        return;
-      }
-
       pressRef.current = { x: point.x, y: point.y, moved: false };
       canvas.setPointerCapture?.(event.pointerId);
     };
 
     const onPointerMove = (event) => {
       const point = localPoint(event);
-      if (active.has(event.pointerId)) active.set(event.pointerId, point);
-
-      // Pinch to zoom, about the midpoint between the fingers — so the map
-      // grows around what is being pinched rather than around its own centre.
-      if (pinch && active.size === 2) {
-        const next = pinchState();
-
-        if (pinch.distance > 0 && next.distance > 0) {
-          const { width, height } = sizeRef.current;
-          const zoomed = zoomAt(
-            viewRef.current,
-            next.midX,
-            next.midY,
-            next.distance / pinch.distance,
-          );
-          viewRef.current = centreWithin(zoomed, geometry.bounds, width, height);
-          schedule();
-        }
-
-        pinch = next;
-        return;
-      }
-
       const press = pressRef.current;
 
       if (press) {
@@ -725,18 +678,6 @@ export function SeatCanvas({
     };
 
     const onPointerUp = (event) => {
-      active.delete(event.pointerId);
-
-      // Lifting one finger of a pinch must not become a tap on the seat under
-      // the other one. The gesture ends here and the remaining finger is inert
-      // until it is lifted too.
-      if (pinch) {
-        if (active.size < 2) pinch = null;
-        pressRef.current = null;
-        canvas.releasePointerCapture?.(event.pointerId);
-        return;
-      }
-
       const press = pressRef.current;
       pressRef.current = null;
       canvas.releasePointerCapture?.(event.pointerId);
@@ -757,9 +698,7 @@ export function SeatCanvas({
       propsRef.current.onToggle?.(seat.id);
     };
 
-    const onPointerLeave = (event) => {
-      active.delete(event.pointerId);
-      if (active.size < 2) pinch = null;
+    const onPointerLeave = () => {
       pressRef.current = null;
 
       // The keyboard cursor is not a hover state and must survive the mouse
@@ -844,9 +783,9 @@ export function SeatCanvas({
       </p>
 
       <p className="seatmap__canvas-note" id="seatmap-canvas-help">
-        Drag or swipe to pan, scroll or pinch to zoom. With the map focused, arrow keys move between
-        seats, Enter or Space selects, and Home and End jump to the ends of a row. A seat map built
-        from real buttons is available with <code>VITE_SEAT_RENDERER=dom</code>.
+        Drag to pan, scroll to zoom. With the map focused, arrow keys move between seats, Enter or
+        Space selects, and Home and End jump to the ends of a row. A seat map built from real
+        buttons is available with <code>VITE_SEAT_RENDERER=dom</code>.
       </p>
     </div>
   );
