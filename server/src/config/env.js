@@ -61,6 +61,15 @@ export const config = {
   // A ticket outlives a long wait but not the visitor's session. Expiry is not
   // an error: the holder simply joins again.
   waitingRoomTicketTtlSeconds: intFromEnv(process.env.WAITING_ROOM_TICKET_TTL_SECONDS, 1800),
+  // BACKLOG.md P2 — group booking constraints. 'no-orphans' refuses a booking
+  // that would strand a single seat between two taken ones.
+  //
+  // OFF BY DEFAULT, and that is not timidity. It is a new way for a booking to
+  // be refused, and Phase 2's before/after concurrency measurement — one of
+  // PLAN.md's two non-negotiables — is taken by booking seats under contention.
+  // A second refusal path silently mixed into that run would change what the
+  // number means. Enabling it is a deliberate act, exactly like BOOKING_MODE.
+  groupBookingRule: (process.env.GROUP_BOOKING_RULE ?? 'off').trim().toLowerCase(),
 };
 
 // NaN rather than the fallback for a malformed value: an unset variable means

@@ -5,6 +5,7 @@ import { HttpError } from '../lib/http-error.js';
 import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from './availabilityService.js';
 import { getShowWithScreen, isId } from './catalogService.js';
+import { describeOrphans, orphansCreatedBy } from './groupBookingRules.js';
 import { heldSeatIdsFor, releaseHoldsTogether, remainderOf } from './holdService.js';
 
 // Importing this module is what makes the server refuse to start with an
@@ -91,6 +92,9 @@ async function resolveSeats(showId, screenId, seatIds) {
 // The booking user is passed through from Module 4.3 onward so that their own
 // hold does not refuse their own booking. Seats held by anybody else are not
 // available to them, which is the whole point of a hold.
+// Returns the seats it read, so the group-booking rule below can reuse them.
+// One availability read on the booking path, still — adding a second call for
+// the rule would be the second query path CLAUDE.md §10 exists to prevent.
 async function assertSeatsAvailable(showId, seatIds, userId) {
   const seats = await getSeatStatus(showId, { forUserId: userId });
   const status = new Map(seats.map((seat) => [seat.id, seat.status]));
@@ -102,6 +106,31 @@ async function assertSeatsAvailable(showId, seatIds, userId) {
       'One or more of those seats are no longer available',
     );
   }
+
+  return seats;
+}
+
+// BACKLOG.md P2 — refuse a booking that would strand a single seat between two
+// taken ones. Off unless GROUP_BOOKING_RULE says otherwise.
+//
+// Advisory, not a guarantee. Two bookings committing at the same instant each
+// see the seating as it was before the other, so a pair of individually clean
+// bookings can still leave an orphan between them. Closing that would mean
+// locking the row for the length of the transaction, which would trade a real
+// concurrency property for a seating preference — a bad bargain, and not what
+// the backlog asks for. The unique constraint remains the only guarantee here.
+function assertNoOrphanSeats(seats, seatIds) {
+  if (config.groupBookingRule !== 'no-orphans') return;
+
+  const orphans = orphansCreatedBy(seats, seatIds);
+  if (orphans.length === 0) return;
+
+  throw new HttpError(
+    409,
+    'ORPHAN_SEAT',
+    `That selection would leave ${describeOrphans(seats, orphans)} stranded on its own. ` +
+      'Please choose seats that do not leave a single gap.',
+  );
 }
 
 async function insertBooking(userId, showId, totalPaise) {
@@ -263,7 +292,11 @@ export async function createBooking({ userId, showId, seatIds }) {
   // it is why that path races. On the safe path it is UX only — see
   // createBookingSafe. Either way it returns the same 409 code the constraint
   // violation does, so a client never has to know which layer caught it.
-  await assertSeatsAvailable(found.show.id, seatIds, userId);
+  const showSeats = await assertSeatsAvailable(found.show.id, seatIds, userId);
+
+  // Checked before anything is written, so a refused selection costs a read and
+  // nothing else.
+  assertNoOrphanSeats(showSeats, seatIds);
 
   const create = config.bookingMode === 'safe' ? createBookingSafe : createBookingNaive;
 
