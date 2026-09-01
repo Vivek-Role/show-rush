@@ -5,6 +5,7 @@ import { HttpError } from '../lib/http-error.js';
 import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from './availabilityService.js';
 import { getShowWithScreen, isId } from './catalogService.js';
+import { heldSeatIdsFor, releaseHoldsTogether, remainderOf } from './holdService.js';
 
 // Importing this module is what makes the server refuse to start with an
 // unknown BOOKING_MODE, or with the racy path enabled in production.
@@ -282,6 +283,16 @@ export async function createBooking({ userId, showId, seatIds }) {
   // lock and no check, and the race it is measured for is untouched.
   void broadcastSeats(found.show.id, seatIds);
 
+  // BACKLOG.md P2 — partial-hold handling.
+  //
+  // Hold six, book four, and the other two were held until their TTL ran out:
+  // seven minutes of seats nobody could select and nobody was going to buy.
+  // The remainder is known the moment the booking commits, so it goes back now.
+  //
+  // Never awaited and never able to fail the booking: the seats are sold, and a
+  // Redis problem is not a reason to turn a committed booking into an error.
+  void releaseRemainingHolds({ showId: found.show.id, bookedSeatIds: seatIds, userId });
+
   // status is 'pending' and stays there: Phase 5 owns the transition to 'paid'.
   return {
     booking_ref: booking.booking_ref,
@@ -290,4 +301,42 @@ export async function createBooking({ userId, showId, seatIds }) {
     total_paise: totalPaise,
     seats,
   };
+}
+
+/**
+ * BACKLOG.md P2 — give back the seats this user held but did not book.
+ *
+ * The remainder is computed from the owner hint in holdService and released as
+ * one atomic Redis operation, so a part-booked selection cannot leave half its
+ * leftovers held. Every step is ownership-checked against the real hold keys,
+ * so a seat that expired or changed hands in the meantime is skipped rather
+ * than taken from whoever has it now.
+ *
+ * The room is told, because those seats just became selectable again and the
+ * map would otherwise show them as held until the next refetch.
+ *
+ * THE HONEST LIMIT: this is not atomic with the Postgres booking. It runs after
+ * the booking commits, and if Redis is unreachable at that moment the remainder
+ * stays held until HOLD_TTL_SECONDS — the same bound acquireHolds' rollback
+ * already lives with. What it removes is the *routine* seven-minute leak, not
+ * every possible one.
+ */
+async function releaseRemainingHolds({ showId, bookedSeatIds, userId }) {
+  try {
+    const held = await heldSeatIdsFor({ showId, userId });
+    const remainder = remainderOf(held, bookedSeatIds);
+
+    if (remainder.length === 0) return;
+
+    const { releasedSeatIds } = await releaseHoldsTogether({
+      showId,
+      seatIds: remainder,
+      userId,
+    });
+
+    if (releasedSeatIds.length > 0) void broadcastSeats(showId, releasedSeatIds);
+  } catch (err) {
+    // Bounded by the TTL, and never the caller's problem: the booking is done.
+    console.error(`releasing the unbooked remainder failed for show ${showId}`, err);
+  }
 }

@@ -32,6 +32,20 @@ export function holdKey(showId, seatId) {
   return `hold:${showId}:${seatId}`;
 }
 
+// BACKLOG.md P2, partial-hold handling — which seats this user asked to hold on
+// this show.
+//
+// A HINT, NEVER AN AUTHORITY. The per-seat keys above remain the only thing
+// that says who holds what; this set only says where to look. A member whose
+// key has since expired or changed hands is ordinary, and every read of this
+// set is followed by an ownership-checked operation on the real keys, so a
+// stale member can only ever cost one no-op. That is what keeps it from
+// becoming a second source of truth about seat status — availabilityService
+// still owns that, and this answers a different question.
+function ownerKey(showId, userId) {
+  return `holdowner:${showId}:${userId}`;
+}
+
 // The routes validate ids before they get here (lib/validate.js). This is the
 // backstop that keeps an unvalidated caller from writing a key of its own
 // choosing: without it, a seat id containing a colon addresses another seat's
@@ -107,6 +121,29 @@ const RELEASE_SCRIPT = `
   return 0
 `;
 
+// BACKLOG.md P2 — compare-and-delete across many keys in one call.
+//
+// releaseHolds below loops, one round trip per seat, which is right when the
+// caller is giving back seats it just chose. Releasing the remainder of a
+// part-booked selection is different: those seats must go back together, and a
+// loop that fails halfway leaves some of them held for the rest of the TTL.
+// One EVAL over N keys is a single atomic Redis operation, so the group is
+// released or it is not.
+//
+// Ownership is still checked per key, exactly as the single-key script does, so
+// a stale member of the owner set — or a seat that has since changed hands —
+// is skipped rather than stolen.
+const RELEASE_MANY_SCRIPT = `
+  local released = {}
+  for i = 1, #KEYS do
+    if redis.call('get', KEYS[i]) == ARGV[1] then
+      redis.call('del', KEYS[i])
+      released[#released + 1] = i
+    end
+  end
+  return released
+`;
+
 // Compare-and-expire. Never GET then EXPIRE.
 const EXTEND_SCRIPT = `
   if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -158,6 +195,17 @@ export async function acquireHolds({ showId, seatIds, userId }) {
     if (result === 1) acquired.push(seatId);
   }
 
+  // BACKLOG.md P2. Recorded only once every seat is held, so a rolled-back
+  // attempt leaves nothing behind. Best effort: the set is a hint, and losing
+  // it costs the remainder release below, not the holds themselves.
+  try {
+    const conn = client();
+    await conn.sAdd(ownerKey(showId, owner), ordered);
+    await conn.expire(ownerKey(showId, owner), HOLD_TTL_SECONDS);
+  } catch {
+    console.error(`hold owner index write failed for show ${showId} user ${owner}`);
+  }
+
   return { ok: true, seatIds: ordered, ttlSeconds: HOLD_TTL_SECONDS };
 }
 
@@ -191,7 +239,79 @@ export async function releaseHolds({ showId, seatIds, userId }) {
     if (deleted === 1) releasedSeatIds.push(seatId);
   }
 
+  await forgetOwned(showId, owner, seatIds);
+
   return { releasedSeatIds };
+}
+
+// Drop seats from the owner hint. Every caller has already acted on the real
+// keys, so a failure here only leaves a stale member, which the next read
+// skips.
+async function forgetOwned(showId, owner, seatIds) {
+  if (seatIds.length === 0) return;
+
+  try {
+    await client().sRem(ownerKey(showId, owner), seatIds.map(String));
+  } catch {
+    console.error(`hold owner index cleanup failed for show ${showId} user ${owner}`);
+  }
+}
+
+/**
+ * Seats this user is recorded as holding on this show.
+ *
+ * A hint, so it is filtered rather than trusted: expired and re-owned seats are
+ * dropped by the ownership check in whatever acts on the result. Returns an
+ * empty list rather than throwing when Redis is unreachable — the caller is
+ * cleaning up after a booking that already succeeded, and must not be failed
+ * for it.
+ */
+export async function heldSeatIdsFor({ showId, userId }) {
+  try {
+    const members = await client().sMembers(ownerKey(showId, String(userId)));
+    return Array.isArray(members) ? members : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * BACKLOG.md P2 — release these seats as one atomic Redis operation.
+ *
+ * Used for the remainder of a part-booked selection, where the seats must go
+ * back together. Seats held by somebody else, and seats whose hold has already
+ * expired, are skipped and not reported, exactly as releaseHolds does.
+ */
+export async function releaseHoldsTogether({ showId, seatIds, userId }) {
+  if (seatIds.length === 0) return { releasedSeatIds: [] };
+
+  assertIds(showId, seatIds);
+
+  const owner = String(userId);
+  const ordered = sortSeatIdsNumerically(seatIds);
+  const keys = ordered.map((seatId) => holdKey(showId, seatId));
+
+  const releasedIndexes = await client().eval(RELEASE_MANY_SCRIPT, {
+    keys,
+    arguments: [owner],
+  });
+
+  // The script returns 1-based positions, which map back to the seats it let
+  // go — the ids never leave this process, so nothing has to parse a key.
+  const releasedSeatIds = (releasedIndexes ?? []).map((index) => ordered[Number(index) - 1]);
+
+  await forgetOwned(showId, owner, ordered);
+
+  return { releasedSeatIds };
+}
+
+/**
+ * Which of `held` are not in `booked`. Pure, and the whole decision behind
+ * partial-hold handling.
+ */
+export function remainderOf(held, booked) {
+  const kept = new Set(booked.map(String));
+  return [...new Set(held.map(String))].filter((seatId) => !kept.has(seatId));
 }
 
 /**
