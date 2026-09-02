@@ -232,15 +232,149 @@
 }
 
 /* BACKLOG.md P3 — conflict UX. Announced in place, not in a dialog: the
-   visitor keeps whatever they were doing. */
+   visitor keeps whatever they were doing. Colour comes from .note--warn in
+   app.css; this only handles the layout of the message and its Dismiss. */
 .seatmap-conflict {
-  background: #fef3c7;
-  border: 1px solid #f59e0b;
-  border-radius: 6px;
-  margin: 0 0 0.75rem;
-  padding: 0.5rem 0.75rem;
+  align-items: center;
+  margin: 0;
 }
 
 .seatmap-suggest {
-  margin: 0 0 0.75rem;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Presentation polish.
+
+   Deliberately no change to --seat-size, --seat-gap or the row-label width:
+   geometry.js mirrors those numbers so the canvas and the DOM grid place seats
+   identically, and moving one without the other would desync the two renderers.
+   --------------------------------------------------------------------------- */
+
+.seatmap {
+  padding-top: 0.25rem;
+}
+
+/* The screen, drawn as a screen rather than a caption: a bright curved band
+   the seating faces. */
+.seatmap__screen {
+  border-bottom: none;
+  color: #52525b;
+  font-weight: 600;
+  position: relative;
+  padding-bottom: 0.9rem;
+}
+
+.seatmap__screen::after {
+  content: '';
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 0.2rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #c7d2fe, #eef2ff);
+  box-shadow: 0 0 18px 3px rgb(79 70 229 / 22%);
+}
+
+.seat {
+  border-radius: 0.3rem;
+  font-weight: 600;
+  transition: transform 90ms ease, box-shadow 90ms ease;
+}
+
+.seat[data-status='available']:hover {
+  outline: none;
+  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px #4f46e5;
+}
+
+/* Taken seats must never be mistakable for an available silver seat, so they
+   stay clearly darker than any tier colour rather than merely duller. */
+.seat:disabled {
+  background: #6b7280;
+  border-color: #4b5563;
+  color: #e5e7eb;
+}
+
+.seat[data-selected='true'] {
+  background: #4f46e5;
+  border-color: #3730a3;
+  color: #fff;
+  box-shadow: inset 0 0 0 2px #e0e7ff;
+}
+
+.seat[data-pending='true'] {
+  box-shadow: inset 0 0 0 2px #c7d2fe;
+}
+
+/* The legend reads as a row of chips rather than loose text. */
+.legend {
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e4e4e7;
+}
+
+.legend__item {
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #e4e4e7;
+  border-radius: 999px;
+  background: #fff;
+}
+
+.legend__swatch[data-status='booked'] {
+  background: #6b7280;
+  border-color: #4b5563;
+}
+
+/* Tier names are single lowercase words and read better capitalised; the state
+   labels are phrases, and "Held By Someone Else" is not a sentence. */
+.legend__tier {
+  text-transform: none;
+}
+
+.legend__tier--tier {
+  text-transform: capitalize;
+}
+
+.legend__price {
+  font-weight: 600;
+  color: #27272a;
+  font-variant-numeric: tabular-nums;
+}
+
+.seatmap--canvas {
+  border-color: #e4e4e7;
+  border-radius: 0.5rem;
+  background: linear-gradient(180deg, #fafafa, #f4f4f5);
+}
+
+/* ---------------------------------------------------------------------------
+   Held is not sold.
+
+   The payload has always distinguished the two; the UI used to render both as
+   the same dark block. Someone else's seven-minute hold is a seat that may well
+   come back, and a visitor deciding whether to wait or move on needs to see
+   which is which. Amber and hatched, so it reads as "in progress" rather than
+   "gone", and it is distinguishable from booked without relying on hue alone.
+   --------------------------------------------------------------------------- */
+.seat[data-status='held'],
+.legend__swatch[data-status='held'] {
+  background: repeating-linear-gradient(
+    -45deg,
+    #fb923c,
+    #fb923c 3px,
+    #f97316 3px,
+    #f97316 6px
+  );
+  border-color: #c2410c;
+  color: #7c2d12;
+}
+
+/* Your own selection, in the legend, using the same fill the seats use. */
+.legend__swatch[data-state='selected'] {
+  background: #4f46e5;
+  border-color: #3730a3;
 }

@@ -10,38 +10,62 @@ export function BookingResult({ booking, onPay, paying, payError, onDismiss }) {
   const paid = booking.status === 'paid';
 
   return (
-    <section className="booking-result" role="status">
-      <h2>Booked — {booking.booking_ref}</h2>
+    <section className="card booking-result" role="status">
+      <div className="card__body">
+        <div className="booking-result__head">
+          <div>
+            <p className="booking-result__eyebrow">{paid ? 'Paid' : 'Booked'}</p>
+            <h2 className="booking-result__ref">{booking.booking_ref}</h2>
+          </div>
+          <span className={`badge ${paid ? 'badge--paid' : 'badge--pending'}`}>
+            {booking.status}
+          </span>
+        </div>
 
-      <p>
-        {booking.seats.map((seat) => `${seat.row_label}${seat.seat_number}`).join(', ')} ·{' '}
-        {formatPaise(booking.total_paise)}
-      </p>
-
-      {/* Saying this plainly matters: until the payment is confirmed the seats
-          are claimed in the database but nobody has paid for them. */}
-      <p>
-        Status: <strong>{booking.status}</strong>
-        {paid ? null : ' — the seats are yours, but nothing has been paid yet.'}
-      </p>
-
-      {payError ? (
-        <p className="booking-result__error" role="alert">
-          {payError}
+        <p className="booking-result__seats">
+          {booking.seats.map((seat) => (
+            <span className="chip chip--seat" key={seat.id}>
+              {seat.row_label}
+              {seat.seat_number}
+            </span>
+          ))}
         </p>
-      ) : null}
 
-      {/* Pressing Pay twice replays the *same* payment event, which is the
-          whole point: the second press changes nothing and the server answers
-          from what it already recorded. */}
-      {paid ? null : (
-        <button type="button" onClick={onPay} disabled={paying}>
-          {paying ? 'Paying…' : `Pay ${formatPaise(booking.total_paise)}`}
-        </button>
-      )}{' '}
-      <button type="button" onClick={onDismiss}>
-        Dismiss
-      </button>
+        <p className="booking-result__total">{formatPaise(booking.total_paise)}</p>
+
+        {/* Saying this plainly matters: until the payment is confirmed the seats
+            are claimed in the database but nobody has paid for them. */}
+        {paid ? null : (
+          <p className="note note--warn booking-result__pending">
+            The seats are yours, but nothing has been paid yet.
+          </p>
+        )}
+
+        {payError ? (
+          <p className="booking-result__error note note--error" role="alert">
+            {payError}
+          </p>
+        ) : null}
+
+        <div className="booking-result__actions">
+          {/* Pressing Pay twice replays the *same* payment event, which is the
+              whole point: the second press changes nothing and the server answers
+              from what it already recorded. */}
+          {paid ? null : (
+            <button
+              type="button"
+              className="btn btn--primary btn--lg"
+              onClick={onPay}
+              disabled={paying}
+            >
+              {paying ? 'Paying…' : `Pay ${formatPaise(booking.total_paise)}`}
+            </button>
+          )}
+          <button type="button" className="btn" onClick={onDismiss}>
+            {paid ? 'Done' : 'Dismiss'}
+          </button>
+        </div>
+      </div>
     </section>
   );
 }

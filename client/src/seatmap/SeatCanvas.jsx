@@ -37,17 +37,24 @@ const NEUTRAL_FILL = '#d4d4d8';
 const SEAT_BORDER = '#a1a1aa';
 const SEAT_TEXT = '#27272a';
 
-const TAKEN_FILL = '#52525b';
-const TAKEN_BORDER = '#3f3f46';
-const TAKEN_TEXT = '#a1a1aa';
+const TAKEN_FILL = '#6b7280';
+const TAKEN_BORDER = '#4b5563';
+const TAKEN_TEXT = '#e5e7eb';
 
-const SELECTED_FILL = '#16a34a';
-const SELECTED_BORDER = '#14532d';
-const SELECTED_TEXT = '#f0fdf4';
-const SELECTED_RING = '#f0fdf4';
-const PENDING_RING = '#bbf7d0';
+// Held by somebody else. Amber rather than grey, because a hold expires and a
+// sale does not — the canvas cannot hatch the fill the way CSS does, so the
+// hue and the darker border carry the distinction here.
+const HELD_FILL = '#fb923c';
+const HELD_BORDER = '#c2410c';
+const HELD_TEXT = '#7c2d12';
 
-const HOVER_OUTLINE = '#2563eb';
+const SELECTED_FILL = '#4f46e5';
+const SELECTED_BORDER = '#3730a3';
+const SELECTED_TEXT = '#ffffff';
+const SELECTED_RING = '#e0e7ff';
+const PENDING_RING = '#c7d2fe';
+
+const HOVER_OUTLINE = '#4f46e5';
 const LABEL_TEXT = '#71717a';
 const SCREEN_LINE = '#a1a1aa';
 
@@ -292,9 +299,13 @@ export function SeatCanvas({
       let text = SEAT_TEXT;
 
       if (!selectable) {
-        fill = TAKEN_FILL;
-        border = TAKEN_BORDER;
-        text = TAKEN_TEXT;
+        // Held is not sold. Someone else's seven-minute hold may well come
+        // back, and a visitor deciding whether to wait needs to see which is
+        // which — the same distinction seatmap.css draws for the DOM renderer.
+        const held = seat.status === 'held';
+        fill = held ? HELD_FILL : TAKEN_FILL;
+        border = held ? HELD_BORDER : TAKEN_BORDER;
+        text = held ? HELD_TEXT : TAKEN_TEXT;
       }
 
       if (selected) {
@@ -468,6 +479,33 @@ export function SeatCanvas({
     const stats = counters();
     if (stats) stats.quadtree = describeQuadtree(tree);
   }, [tree]);
+
+  // Zoom about the middle of the viewport, for the on-screen controls.
+  //
+  // Pinch-to-zoom is deliberately not shipped, so on a touch device these
+  // buttons are the only way to zoom at all — there is no wheel on a phone.
+  // They also give the wheel gesture a discoverable, keyboard-reachable
+  // equivalent, which the wheel alone never had.
+  const zoomBy = useCallback(
+    (factor) => {
+      const { width, height } = sizeRef.current;
+      if (!width || !height) return;
+
+      const zoomed = zoomAt(viewRef.current, width / 2, height / 2, factor);
+      viewRef.current = centreWithin(zoomed, geometry.bounds, width, height);
+      schedule();
+    },
+    [geometry, schedule],
+  );
+
+  // Back to the view the map opened at — the whole plan, fitted.
+  const resetView = useCallback(() => {
+    const { width, height } = sizeRef.current;
+    if (!width || !height) return;
+
+    viewRef.current = fitToBounds(geometry.bounds, width, height);
+    schedule();
+  }, [geometry, schedule]);
 
   // Bring a cell into view without changing zoom, so a keyboard cursor can walk
   // off the visible edge and the map follows it. Only translates when the cell
@@ -776,6 +814,35 @@ export function SeatCanvas({
         onBlur={onBlur}
       />
 
+      {/* Zoom, for anyone without a wheel. Real buttons, so they are reachable
+          by Tab and announced like any other control. */}
+      <div className="zoom-controls">
+        <button
+          type="button"
+          className="btn btn--sm"
+          onClick={() => zoomBy(1.4)}
+          aria-label="Zoom in"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          className="btn btn--sm"
+          onClick={() => zoomBy(1 / 1.4)}
+          aria-label="Zoom out"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          className="btn btn--sm btn--reset"
+          onClick={resetView}
+          aria-label="Fit the whole seat map"
+        >
+          Fit
+        </button>
+      </div>
+
       {/* The spoken half of the canvas. Polite so it never interrupts, and it
           is the only place a screen reader learns which seat the cursor is on. */}
       <p className="seatmap__canvas-live" role="status" aria-live="polite">
@@ -783,9 +850,9 @@ export function SeatCanvas({
       </p>
 
       <p className="seatmap__canvas-note" id="seatmap-canvas-help">
-        Drag to pan, scroll to zoom. With the map focused, arrow keys move between seats, Enter or
-        Space selects, and Home and End jump to the ends of a row. A seat map built from real
-        buttons is available with <code>VITE_SEAT_RENDERER=dom</code>.
+        Drag to pan, scroll or use the buttons to zoom. With the map focused, arrow keys move
+        between seats, Enter or Space selects, and Home and End jump to the ends of a row. A seat
+        map built from real buttons is available with <code>VITE_SEAT_RENDERER=dom</code>.
       </p>
     </div>
   );

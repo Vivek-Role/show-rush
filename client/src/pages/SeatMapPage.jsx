@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { createBooking } from '../api/bookings.js';
 import { request } from '../api/client.js';
 import { confirmPayment } from '../api/payments.js';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { BookingResult } from '../booking/BookingResult.jsx';
 import { BookingSummary } from '../booking/BookingSummary.jsx';
+import { CheckoutBar } from '../booking/CheckoutBar.jsx';
 import { Legend } from '../seatmap/Legend.jsx';
 import { SeatMap } from '../seatmap/SeatMap.jsx';
 import { recommendSeats } from '../seatmap/recommend.js';
@@ -128,6 +129,28 @@ export function SeatMapPage() {
     // moment their status changed; this is the bookkeeping catching up.
     forget(ids);
   }, [takenSeats, forget, selection]);
+
+  // The tab title names the show, so a visitor with several tabs open — which
+  // is exactly what someone comparing showtimes does — can tell them apart.
+  useEffect(() => {
+    if (!data) return undefined;
+    const previous = document.title;
+    document.title = `${data.show.movie.title} · Show-Rush`;
+    return () => {
+      document.title = previous;
+    };
+  }, [data]);
+
+  // A confirmed booking must not appear somewhere the visitor is not looking.
+  // On desktop it renders under a seat map taller than the viewport, so it is
+  // scrolled to and focused — which also puts a screen reader inside the panel
+  // that role="status" has just announced.
+  const bookingRef = useRef(null);
+  useEffect(() => {
+    if (!booking || !bookingRef.current) return;
+    bookingRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    bookingRef.current.focus({ preventScroll: true });
+  }, [booking]);
 
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedSeats = useMemo(
@@ -421,69 +444,138 @@ export function SeatMapPage() {
     setBooking(null);
   }
 
-  if (error) return <p>{error}</p>;
-  if (!data) return <p>Loading…</p>;
+  if (error) {
+    return (
+      <div className="stack">
+        <Link className="backlink" to="/">
+          ← All films
+        </Link>
+        <p className="note note--error" role="alert">
+          <span>{error}</span>
+          <span className="note__spacer" />
+          <button type="button" className="btn btn--sm" onClick={() => load()}>
+            Try again
+          </button>
+        </p>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="stack" aria-hidden="true">
+        <div className="skeleton skeleton--text" style={{ width: '6rem' }} />
+        <div className="skeleton skeleton--text" style={{ width: '40%', height: '1.6rem' }} />
+        <div className="skeleton" style={{ height: '18rem', borderRadius: '0.75rem' }} />
+      </div>
+    );
+  }
+
+  const suggestCount = Math.min(Math.max(selection.count || 2, 1), MAX_SEATS);
+  const availableCount = seats.reduce(
+    (total, seat) => total + (seat.status === 'available' ? 1 : 0),
+    0,
+  );
 
   return (
-    <>
-      <h1>{data.show.movie.title}</h1>
-      <p>
-        {TIME_FORMAT.format(new Date(data.show.starts_at))} · {data.screen.name} ·{' '}
-        {data.screen.cinema_name}
-      </p>
+    <div className="stack booking-page">
+      <Link className="backlink" to={`/movies/${data.show.movie.id}`}>
+        ← {data.show.movie.title}
+      </Link>
+
+      <div className="page-head">
+        <div>
+          <h1>{data.show.movie.title}</h1>
+          <p className="page-head__sub">
+            {TIME_FORMAT.format(new Date(data.show.starts_at))} · {data.screen.name} ·{' '}
+            {data.screen.cinema_name}
+          </p>
+        </div>
+      </div>
 
       {/* Polite, not assertive: the visitor is told, and keeps whatever they
           were doing. role="status" is what makes a screen reader announce it
           without stealing focus. */}
       {conflict ? (
-        <p className="seatmap-conflict" role="status">
-          {conflict}{' '}
-          <button type="button" onClick={() => setConflict(null)}>
+        <p className="seatmap-conflict note note--warn" role="status">
+          <span>{conflict}</span>
+          <span className="note__spacer" />
+          <button type="button" className="btn btn--sm" onClick={() => setConflict(null)}>
             Dismiss
           </button>
         </p>
       ) : null}
 
-      <p className="seatmap-suggest">
-        <button type="button" onClick={recommend}>
-          Suggest {Math.min(Math.max(selection.count || 2, 1), MAX_SEATS)} together
-        </button>
-      </p>
+      {availableCount === 0 ? (
+        <p className="note note--warn soldout" role="status">
+          <strong>Sold out.</strong> Every seat for this show is taken. Seats sometimes come back
+          when a hold expires, so it is worth checking again.
+        </p>
+      ) : null}
 
-      <SeatMap
-        layout={data.screen.layout}
-        seatAt={index.seatAt}
-        isSelected={selection.isSelected}
-        isPending={selection.isPending}
-        onToggle={onSeatToggle}
-        limitReached={selection.limitReached}
-      />
-      <Legend tiers={data.screen.layout.tiers} tierPrices={index.tierPrices} />
+      <div className="booking-layout">
+        <div className="stack">
+          <section className="card seatmap-panel">
+            <div className="seatmap-toolbar">
+              <button type="button" className="btn btn--sm seatmap-suggest" onClick={recommend}>
+                Suggest {suggestCount} together
+              </button>
+              <span className="seatmap-toolbar__spacer" />
+              <span className="seatmap-hint">Pick up to {MAX_SEATS} seats</span>
+            </div>
 
-      <BookingSummary
-        seats={selectedSeats}
-        breakdown={selection.breakdown}
-        totalPaise={selection.totalPaise}
+            <SeatMap
+              layout={data.screen.layout}
+              seatAt={index.seatAt}
+              isSelected={selection.isSelected}
+              isPending={selection.isPending}
+              onToggle={onSeatToggle}
+              limitReached={selection.limitReached}
+            />
+
+            <Legend tiers={data.screen.layout.tiers} tierPrices={index.tierPrices} />
+          </section>
+
+          {booking ? (
+            <div ref={bookingRef} tabIndex={-1}>
+              <BookingResult
+                booking={booking}
+                onPay={onPay}
+                paying={paying}
+                payError={payError}
+                onDismiss={onDismissBooking}
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <aside className="booking-layout__aside">
+          <BookingSummary
+            seats={selectedSeats}
+            breakdown={selection.breakdown}
+            totalPaise={selection.totalPaise}
+            count={selection.count}
+            limitReached={selection.limitReached}
+            maxSeats={MAX_SEATS}
+            busy={busy}
+            signedIn={Boolean(user)}
+            secondsLeft={holds.secondsLeft}
+            onProceed={onProceed}
+            onClear={selection.clear}
+            error={bookingError}
+          />
+        </aside>
+      </div>
+
+      {/* Phones only: the same total and action, pinned within thumb reach. */}
+      <CheckoutBar
         count={selection.count}
-        limitReached={selection.limitReached}
-        maxSeats={MAX_SEATS}
+        totalPaise={selection.totalPaise}
+        secondsLeft={holds.secondsLeft}
         busy={busy}
         signedIn={Boolean(user)}
-        secondsLeft={holds.secondsLeft}
         onProceed={onProceed}
-        onClear={selection.clear}
-        error={bookingError}
       />
-
-      {booking ? (
-        <BookingResult
-          booking={booking}
-          onPay={onPay}
-          paying={paying}
-          payError={payError}
-          onDismiss={onDismissBooking}
-        />
-      ) : null}
-    </>
+    </div>
   );
 }
