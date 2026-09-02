@@ -19,6 +19,14 @@ all**. Merging and deploying are separate decisions that have not been taken.
 
 ## Demo
 
+![The seat map: canvas renderer, three price tiers, booked seats dimmed, aisles
+after columns 4 and 12.](docs/images/seat-map.jpg)
+
+*Show 1 on the seeded dataset, served by `vite preview` against a local API —
+the canvas renderer at `VITE_SEAT_RENDERER=canvas`. Captured 2026-08-31 from the
+production client build; it is a screenshot of the local stack, not of the
+deployed link below, which still serves Phase 2 and has no client.*
+
 <https://show-rush.onrender.com>
 
 **Demo account** — no need to register:

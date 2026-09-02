@@ -304,9 +304,15 @@ approval-gated.
 
 ## Phase 6.4 — seat churn, and the client counters
 
+`seat-churn.js` drives holds and releases as a single signed-in user, so it
+needs `HOLD_RATE_LIMIT=0` for the same reason the Phase 7 hold runs do — see the
+note under Phase 7 below. With the limiter at its default of 30 requests per
+minute, almost every hold in this run would be refused with 429 and the client
+would be measured against a stream of errors rather than a stream of updates.
+
 ```bash
 # terminal 1 — the API
-RECONCILE_INTERVAL_SECONDS=0 npm start
+RECONCILE_INTERVAL_SECONDS=0 HOLD_RATE_LIMIT=0 npm start
 
 # terminal 2 — the client under measurement
 PROFILE=1 npm run build:client        # add VITE_SEAT_UPDATE_MODE=immediate for the "before"
@@ -345,6 +351,12 @@ stimulus.
 **Every Phase 7 run used `RECONCILE_INTERVAL_SECONDS=0`.** A sweep mutating
 booking status mid-run measures something other than the code under test.
 
+**Any hold benchmark must also set `HOLD_RATE_LIMIT=0`.** The backlog's hold rate
+limiter defaults to 30 requests per user per 60 seconds, and a load generator
+drives hundreds a second as a single user — so with it enabled the run measures
+the limiter refusing requests rather than the hold path serving them. The Phase 7
+numbers recorded here predate the limiter and were measured without it.
+
 ### `hold-throughput.js` — Phase 7.1, hold throughput
 
 **Uncontended by construction.** `setup()` cuts the show's available seats into
@@ -354,11 +366,11 @@ question and mixing the two produces a number that answers neither. Any 409 mean
 the slices overlapped: the summary prints a warning and the run must be discarded.
 
 ```bash
-RECONCILE_INTERVAL_SECONDS=0 npm start          # terminal 1
+RECONCILE_INTERVAL_SECONDS=0 HOLD_RATE_LIMIT=0 npm start   # terminal 1
 
 SHOW_ID=21 VUS=50 SEATS_PER_VU=4 DURATION=60s \
   SUMMARY_OUT=loadtest/results/7.2d-holds-$(date +%F)-vus50.json \
-  k6 run loadtest/hold-throughput.js            # terminal 2
+  k6 run loadtest/hold-throughput.js                       # terminal 2
 ```
 
 | Variable | Default | Notes |
