@@ -14,6 +14,27 @@ export const config = {
   port: Number(process.env.PORT) || 3000,
   databaseUrl: process.env.DATABASE_URL ?? '',
   redisUrl: process.env.REDIS_URL ?? '',
+  // BACKLOG.md P2, finding F-2 — the pg pool ceiling, made deliberate.
+  //
+  // pg's own default is 10, and pool.js never said so. Phase 7 sampled exactly
+  // 10 connections at every point of a 200-VU hold load against a Postgres
+  // allowing max_connections=100, with most of them idle: the queue was in
+  // Node, and nothing in the repository had chosen that number. This variable
+  // is the choosing.
+  //
+  // The default is 10 ON PURPOSE, and it is not timidity. Every benchmark in
+  // this repository — Phase 2's before/after, Phase 5's replay, Phase 7's
+  // throughput and latency tables, Phase 9's three-instance figures — was
+  // measured at 10. Shipping a different number would invalidate all of them
+  // at once and replace a measurement with a guess. So the behaviour is
+  // unchanged and the ceiling is now visible, named and tunable; raising it is
+  // a deliberate act that must be re-benchmarked, per the finding itself.
+  //
+  // Size it against the whole topology, not one process. The pool is per
+  // process, so `docker compose --profile multi` opens three of them against
+  // one Postgres — 3 x DB_POOL_MAX connections, against a default
+  // max_connections of 100.
+  dbPoolMax: intFromEnv(process.env.DB_POOL_MAX, 10),
   jwtSecret: process.env.JWT_SECRET ?? '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
   // The exact origin the browser client is served from. Empty means no browser
@@ -159,6 +180,27 @@ export function assertCancellationConfig() {
     throw new Error(
       'CANCELLATION_WINDOW_MINUTES must be a non-negative integer number of minutes, ' +
         'where 0 allows cancellation up to the moment the show starts. See .env.example.',
+    );
+  }
+}
+
+// F-2. A malformed pool size is a refusal to start rather than a default
+// quietly substituted, and here that matters more than usual: pg treats a NaN
+// max as "unset" and silently gives back its own default of 10 — verified
+// against pg 8. A typo would therefore look exactly like working configuration
+// while the ceiling this finding is about stayed where it was. pool.js calls
+// this at import, so the server, the migration runner, the seed scripts and the
+// reconcile CLI all refuse together.
+//
+// 0 is an error, not a switch. There is no meaningful "no connections" pool:
+// pg would accept it and every query would wait forever for a client that
+// cannot be created. Unlike RECONCILE_INTERVAL_SECONDS or HOLD_RATE_LIMIT,
+// there is nothing here to disable.
+export function assertPoolConfig() {
+  if (!Number.isInteger(config.dbPoolMax) || config.dbPoolMax < 1) {
+    throw new Error(
+      `DB_POOL_MAX must be a positive integer number of connections, got '${process.env.DB_POOL_MAX}'. ` +
+        'See .env.example.',
     );
   }
 }
