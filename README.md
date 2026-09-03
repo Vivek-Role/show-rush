@@ -354,6 +354,34 @@ reconciliation sweep is what cancels it if nobody does.
 A seat held by *somebody else* is not available to book; a seat the caller holds
 themselves is, which is what a hold is for.
 
+### Cancellation
+
+| Method | Path | Body / auth | Success | Errors |
+|---|---|---|---|---|
+| `POST` | `/api/bookings/:ref/cancel` | none · auth | `200 {booking}` | `409 NOT_CANCELLABLE`, `409 CANCELLATION_WINDOW_CLOSED`, `403 FORBIDDEN`, `404 NOT_FOUND`, `401 UNAUTHENTICATED` |
+
+A booking is cancelled **whole** — there is no partial cancellation. `pending`
+becomes `cancelled`; `paid` becomes `refund_pending`, and the response carries
+`refund_due` so a client does not have to infer it from a status string.
+
+**Nothing is refunded.** There is no payment provider in this build — a real
+gateway is `BACKLOG.md` P1 — so `refund_pending` is a record that a refund is
+owed, never evidence that one happened.
+
+Cancellation is allowed until `CANCELLATION_WINDOW_MINUTES` (default **120**)
+before the show starts, measured against `shows.starts_at` rather than against
+when the booking was made. Exactly on the boundary is closed.
+
+**Cancelling deletes the booking's seat rows, it does not only change a status**
+— the same reason expiry does. They are archived to `released_booking_seats`
+with `reason = 'cancelled'` first, which is what distinguishes a booking the
+sweep gave up on from one its owner handed back. The seats are announced to the
+show's WebSocket room after the transaction commits.
+
+A cancellation, a payment and the reconciliation sweep for one booking all take
+`FOR UPDATE` on the same `bookings` row, so whichever commits first wins outright
+and the others read the committed result.
+
 `409 SEATS_UNAVAILABLE` is the same code whether the seat was already gone when
 the request arrived or was lost in a race at commit time. A client should not
 have to know which layer caught it.
@@ -907,7 +935,13 @@ benchmark of the system.
   pool sizing is architecture and is approval-gated.
 - No endpoint returns a user's bookings; a booking is visible only through the
   seat map.
-- No cancellation. **Hold creation is rate limited per user** — 30 requests per
+- **Cancellation is server-side only, and refunds are recorded rather than
+  executed.** `POST /api/bookings/:ref/cancel` exists, obeys a policy window and
+  gives the seats back, but no client screen calls it and no money moves —
+  `refund_pending` is a record of what is owed. It is also the second cause of
+  that status, alongside Module 6.1's late payment; the two are told apart by
+  `released_booking_seats.reason`, not by the status alone.
+- **Hold creation is rate limited per user** — 30 requests per
   60 s by default, counted in Redis so the budget is shared across instances —
   but booking creation is not, and neither is anything else.
 - No refresh tokens; a 7-day access token is the whole session model.

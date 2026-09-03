@@ -61,6 +61,18 @@ export const config = {
   // A ticket outlives a long wait but not the visitor's session. Expiry is not
   // an error: the holder simply joins again.
   waitingRoomTicketTtlSeconds: intFromEnv(process.env.WAITING_ROOM_TICKET_TTL_SECONDS, 1800),
+  // BACKLOG.md P2 — cancellation + refund flow. How many minutes before a show
+  // starts cancellation stops being allowed.
+  //
+  // Measured against shows.starts_at rather than against when the booking was
+  // made, because that is the deadline a cinema actually enforces: a seat sold
+  // back to the floor an hour before the show can still be resold, and one
+  // handed back as the lights go down cannot.
+  //
+  // 0 is meaningful and is not an error — it allows cancellation right up to
+  // the moment the show starts. There is deliberately no value that disables
+  // the endpoint: this is a policy, not a switch.
+  cancellationWindowMinutes: intFromEnv(process.env.CANCELLATION_WINDOW_MINUTES, 120),
   // BACKLOG.md P2 — group booking constraints. 'no-orphans' refuses a booking
   // that would strand a single seat between two taken ones.
   //
@@ -133,6 +145,20 @@ export function assertReconcileConfig() {
     throw new Error(
       'RECONCILE_INTERVAL_SECONDS must be a non-negative integer number of seconds, ' +
         'where 0 disables the periodic sweep. See .env.example.',
+    );
+  }
+}
+
+// BACKLOG.md P2 — cancellation. A malformed window is a refusal to start, not a
+// default quietly substituted at the moment somebody tries to cancel: the value
+// decides whether a booking can be given back, and discovering it is unparseable
+// on the first cancellation is discovering it too late. bookingService calls
+// this at import, the same posture assertBookingConfig() takes for BOOKING_MODE.
+export function assertCancellationConfig() {
+  if (!Number.isInteger(config.cancellationWindowMinutes) || config.cancellationWindowMinutes < 0) {
+    throw new Error(
+      'CANCELLATION_WINDOW_MINUTES must be a non-negative integer number of minutes, ' +
+        'where 0 allows cancellation up to the moment the show starts. See .env.example.',
     );
   }
 }

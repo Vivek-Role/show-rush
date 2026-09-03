@@ -175,7 +175,29 @@ Each is a genuine interview topic. Pick by what you want to be asked about.
       bookings. Constraint-satisfaction problem, real cinema rule.
 - [ ] **Dynamic pricing** by tier and occupancy, with price locked at hold time
       so it can't shift mid-checkout.
-- [ ] **Cancellation + refund flow** with a policy window.
+- [x] **Cancellation + refund flow** with a policy window.
+      `POST /api/bookings/:ref/cancel`, owner-only, cancelling a booking **whole**
+      — there is no partial cancellation. A `pending` booking becomes
+      `cancelled`; a `paid` one becomes `refund_pending`. The window is measured
+      against `shows.starts_at`, default `CANCELLATION_WINDOW_MINUTES=120`, and
+      exactly on the boundary is closed.
+      The seats are archived to `released_booking_seats` with the new reason
+      `'cancelled'` (migration `005`, which is what `004` anticipated when it
+      said a second reason would be a migration) and their `booking_seats` rows
+      deleted — a status change alone would leave a seat that reads `available`
+      and still raises 23505, exactly as Module 6.2 records.
+      Cancellation, payment and the sweep all take `FOR UPDATE` on the same
+      `bookings` row, so the three serialise rather than race; the archive,
+      delete and status SQL is **deliberately duplicated** from
+      `reconcileService` rather than shared, because a sweep able to cancel a
+      paid booking would be a bug with a refund attached.
+      **NOTHING IS REFUNDED.** There is no payment provider (a real one is P1,
+      deliberately not built), so `refund_pending` records that a refund is owed
+      and never that one happened. It now has two causes — this, and Module
+      6.1's late payment — told apart by `released_booking_seats.reason` rather
+      than by the status. **No client screen calls the endpoint**, and no metric
+      is claimed; the item names none. The policy is pure and covered by
+      **12 unit tests**; the transaction is verified by scripted HTTP and SQL.
 - [x] **Multi-instance deployment** — three Node instances behind nginx, one
       Redis pub/sub channel for WebSocket fan-out, behind a `multi` compose
       profile. **Local only: `render.yaml` is untouched and the deployed service

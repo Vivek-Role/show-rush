@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import { assertBookingConfig, config } from '../config/env.js';
+import { assertBookingConfig, assertCancellationConfig, config } from '../config/env.js';
 import { pool } from '../db/pool.js';
 import { HttpError } from '../lib/http-error.js';
 import { broadcastSeats } from '../realtime/hub.js';
 import { getSeatStatus } from './availabilityService.js';
+import { cancellationRefusal, statusAfterCancellation } from './cancellationPolicy.js';
 import { getShowWithScreen, isId } from './catalogService.js';
 import { describeOrphans, orphansCreatedBy } from './groupBookingRules.js';
 import { heldSeatIdsFor, releaseHoldsTogether, remainderOf } from './holdService.js';
@@ -11,6 +12,11 @@ import { heldSeatIdsFor, releaseHoldsTogether, remainderOf } from './holdService
 // Importing this module is what makes the server refuse to start with an
 // unknown BOOKING_MODE, or with the racy path enabled in production.
 assertBookingConfig();
+
+// And with a cancellation window that cannot be parsed. Same posture, same
+// reason: a value that decides whether seats can be given back is not something
+// to discover is malformed on the first cancellation.
+assertCancellationConfig();
 
 // Recorded at boot so a measured run can never be attributed to the wrong mode.
 console.log(`booking mode: ${config.bookingMode}`);
@@ -372,4 +378,182 @@ async function releaseRemainingHolds({ showId, bookedSeatIds, userId }) {
     // Bounded by the TTL, and never the caller's problem: the booking is done.
     console.error(`releasing the unbooked remainder failed for show ${showId}`, err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Cancellation + refund flow — BACKLOG.md P2.
+//
+// The user-initiated counterpart to Module 6.2's sweep, and deliberately the
+// same four steps in the same order: archive the seat rows, delete them, move
+// the booking's status, commit. reconcileService.expireBooking does this because
+// nobody paid; this does it because the person who booked asked.
+//
+// THE SQL BELOW IS DUPLICATED FROM reconcileService, ON PURPOSE. The two differ
+// in who may trigger them, which statuses they accept, which lock they take and
+// which reason they archive under, and folding them together would produce one
+// function with three flags controlling behaviour that must never be confused —
+// a sweep that could cancel a paid booking is a bug with a refund attached.
+// Reads the same, stays separate. If either changes shape, change both:
+// reconcileService.js ARCHIVE / DROP_SEATS / CANCEL are the other copy.
+//
+// WHAT THIS DOES NOT DO: charge anybody back. See cancellationPolicy.js.
+// ---------------------------------------------------------------------------
+
+// Identity only: does this reference exist, and whose is it. Read outside any
+// transaction so 404 and 403 are answered without taking a lock, and
+// deliberately without starts_at — the policy is checked against the locked row
+// below, never against this one.
+const BOOKING_FOR_CANCEL = `
+  select b.id, b.booking_ref, b.user_id, b.show_id, b.status, b.total_paise
+    from bookings b
+   where b.booking_ref = $1
+`;
+
+// FOR UPDATE OF b, not a bare FOR UPDATE: the join is only there for starts_at
+// and locking the shows row as well would make two people cancelling different
+// bookings for the same show queue behind each other for nothing.
+//
+// This is the same row paymentService.LOCK_BOOKING takes and the same row
+// reconcileService.LOCK_ONE takes, which is the whole concurrency story: a
+// cancellation, a payment and a sweep for one booking serialise on it, and
+// whichever commits first is read as committed by the others.
+const LOCK_BOOKING_FOR_CANCEL = `
+  select b.id, b.booking_ref, b.show_id, b.status, b.total_paise, sh.starts_at
+    from bookings b
+    join shows sh on sh.id = b.show_id
+   where b.id = $1
+     for update of b
+`;
+
+// reason = 'cancelled', which is what migration 005 added. RETURNING is what
+// reports the seats that came back, so the broadcast describes what actually
+// changed instead of what the request asked for.
+const ARCHIVE_CANCELLED = `
+  insert into released_booking_seats (booking_id, show_id, seat_id, reason)
+  select booking_id, show_id, seat_id, 'cancelled'
+    from booking_seats
+   where booking_id = $1
+   order by seat_id
+  returning seat_id
+`;
+
+const DROP_CANCELLED_SEATS = 'delete from booking_seats where booking_id = $1';
+
+// Guarded on the status read under the lock. If the row somehow moved anyway
+// this updates nothing, and the transaction is rolled back rather than
+// cancelling a booking that has meanwhile been paid for or swept.
+const CANCEL_BOOKING = `
+  update bookings
+     set status = $2, updated_at = now()
+   where id = $1 and status = $3
+  returning booking_ref, show_id, status, total_paise
+`;
+
+function cancelledBookingPayload(row) {
+  return {
+    booking_ref: row.booking_ref,
+    show_id: String(row.show_id),
+    status: row.status,
+    total_paise: row.total_paise,
+    // Said out loud rather than left for the caller to infer from a status:
+    // 'refund_pending' means a refund is owed, and nothing in this build pays
+    // one. BACKLOG.md P1 is where a real provider would come from.
+    refund_due: row.status === 'refund_pending',
+  };
+}
+
+/**
+ * Cancel a booking and give its seats back.
+ *
+ * All-or-nothing: either the seats are archived, released and the status moved,
+ * or nothing happened at all. The seats become available to everybody else the
+ * moment this commits — availabilityService already treats a cancelled
+ * booking's seats as free, and deleting the booking_seats rows is what releases
+ * the Phase 2.4 unique index entry so the next person can actually take them.
+ */
+export async function cancelBooking({ userId, bookingRef }) {
+  const { rows } = await pool.query(BOOKING_FOR_CANCEL, [bookingRef]);
+  const booking = rows[0];
+
+  if (!booking) {
+    throw new HttpError(404, 'NOT_FOUND', 'Booking not found');
+  }
+
+  // 403 rather than 404, exactly as confirmPayment answers: the reference was a
+  // real reference, and "not found" would make a genuine typo indistinguishable
+  // from somebody else's booking.
+  if (String(booking.user_id) !== String(userId)) {
+    throw new HttpError(403, 'FORBIDDEN', 'That booking belongs to another account');
+  }
+
+  const client = await pool.connect();
+  let refusal = null;
+
+  try {
+    await client.query('begin');
+
+    const locked = await client.query(LOCK_BOOKING_FOR_CANCEL, [booking.id]);
+    const current = locked.rows[0];
+
+    // Bookings are never deleted, so this is unreachable in practice. Answered
+    // rather than thrown, because "the booking is gone" is a 404 whichever
+    // statement discovered it.
+    if (!current) {
+      await client.query('rollback');
+      refusal = { status: 404, code: 'NOT_FOUND', message: 'Booking not found' };
+    } else {
+      // The status that decides is the one read under the lock. The status from
+      // the SELECT above was taken outside any transaction and may already be
+      // stale — a payment or a sweep can have landed in between.
+      const denied = cancellationRefusal({
+        status: current.status,
+        startsAtMs: current.starts_at?.getTime?.() ?? Number.NaN,
+        nowMs: Date.now(),
+        windowMinutes: config.cancellationWindowMinutes,
+      });
+
+      if (denied) {
+        await client.query('rollback');
+        refusal = { status: 409, ...denied };
+      } else {
+        const archived = await client.query(ARCHIVE_CANCELLED, [booking.id]);
+        await client.query(DROP_CANCELLED_SEATS, [booking.id]);
+
+        const updated = await client.query(CANCEL_BOOKING, [
+          booking.id,
+          statusAfterCancellation(current.status),
+          current.status,
+        ]);
+
+        // Unreachable behind the locked SELECT. If it ever fires, the locking
+        // assumption is wrong and that is worth knowing, so nothing is written.
+        if (updated.rowCount === 0) {
+          await client.query('rollback');
+          console.error(`cancel: booking ${booking.booking_ref} changed under its own lock`);
+          throw new Error(`Booking ${booking.booking_ref} changed under its own lock`);
+        }
+
+        await client.query('commit');
+
+        const seatIds = archived.rows.map((row) => String(row.seat_id));
+        const showId = String(current.show_id);
+
+        // After the commit, and never awaited: the seats are free in Postgres
+        // by now, so what the room is told is already true, and a cancellation
+        // that succeeded must not report failure because a socket did.
+        void broadcastSeats(showId, seatIds);
+
+        return cancelledBookingPayload(updated.rows[0]);
+      }
+    }
+  } catch (err) {
+    await client.query('rollback').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  // Thrown outside the try so the rollback above is the only one that runs —
+  // the same shape recordPayment uses for its conflict.
+  throw new HttpError(refusal.status, refusal.code, refusal.message);
 }
